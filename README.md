@@ -20,12 +20,6 @@ They are at https://pege.org/energy-sim/ for download.
 
 On start, the program reads this file and tells you if a newer version is listed here.
 
-## 2026-10-10 Version 0.0
-
-Only for objects with PV, a battery, a heat pump, and car charging.
-Interaction with the outside world by a spot market prices model and limits
-to import and export electricity.
-
 ## Targets for Version 1.0
 
 Define multiple objects and their quantity. This will be called a community
@@ -38,6 +32,17 @@ simulation. For example:
 - An only electric-powered cement factory
 
 We will implement in these simulations different industries.
+
+## 2026-10-14 Version 0.1
+
+Handling of February 29th fixed.
+Rerun all stored simulations with a new version. Report all differences between the old and the new version.
+
+## 2026-10-10 Version 0.0
+
+Only for objects with PV, a battery, a heat pump, and car charging.
+Interaction with the outside world by a spot market prices model and limits
+to import and export electricity.
 
 ## Files
 
