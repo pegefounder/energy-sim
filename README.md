@@ -1,4 +1,4 @@
-# PEGE energy sim
+## PEGE energy sim
 
 https://github.com/pegefounder/energy-sim
 https://www.pege.org/energy-sim/
@@ -28,10 +28,16 @@ simulation. For example:
 - 5000 GEMINI next Generation houses
 - A fast charging station
 - A power to methanol plant with a tank and a CCPP — Combined Cycle Power Plant
-- Agricultural areas with peak demand for electric tractors
+- Agricultural areas with irrigation and peak demand for electric tractors
 - An only electric-powered cement factory
 
 We will implement in these simulations different industries.
+
+## 2026-10-30 Version 0.2
+
+Internationalization at the PDF output. GUI and manual remain English only.
+Project finance: Explore “Let it be like it is” vs. 5 improvement strategies.
+Make stress tests with the financial situation.
 
 ## 2026-10-14 Version 0.1
 
@@ -47,10 +53,10 @@ to import and export electricity.
 ## Files
 
 - `pege_energy_sim_server_uses_default_browser_as_gui.py` — form, default browser as GUI
-- `pege_energy_sim_report.py` — PVGIS download and PDF
-- `pege_energy_sim_demand.py` — house, heat pump, prices
-- `pege_energy_sim_demand_sim.py` — hourly battery and grid run
-- `pege_energy_sim_gui.py` — desktop window, no browser
+- `pege_energy_sim_common.py` — PVGIS, thermal model, PDF generation, shared helpers
+- `pege_energy_sim_object_house.py` — object house form and simulation runner
+- `pege_energy_sim_compare_houses.py` — compare two simulations
+- `pege_energy_sim_project_finance.py` — project finance (baseline, variants A–E, simulate)
 
 ## Start
 
@@ -67,6 +73,7 @@ Under the output parent folder:
 - `locations/` — weather CSV cache, one folder per place, and `.pvgis_country_cache.json`
 - `objects/<object>/` — object JSON and the PDF/JSON of each run
 - `compares/` — compare PDFs
+- `project-finance/<project>/` — project finance models and their simulations
 
 Move existing location folders into `locations/`. A folder still sitting
 in the parent is used, not copied.

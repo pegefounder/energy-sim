@@ -37,8 +37,55 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+ARTIFACTS = {}
+FORM_STATE = {}
+LAST_LOADED = None
+BUILD_VERSION = ""
+
+from pege_energy_sim_common import (
+    LOCAL_VERSION,
+    parse_form, data_root, first,
+    HOST, DEFAULT_PORT, N_ROWS, LAST_FORM, CONFIG, BASE_URL,
+    startup_form_values, _pdf_lang, open_browser,
+    set_language, _t, _fmt,
+)
+from pege_energy_sim_common import demand_form_html, parse_demand_fields, demand_to_form_values
+
+STOP = {"flag": False}
+JOB_LOCK = threading.Lock()
+from pege_energy_sim_common import sanitize_name, list_objects, location_remark, object_folder, object_definition_path, build_report
+
+from pege_energy_sim_project_finance import page_shell
+from pege_energy_sim_object_house import (
+    form_html, parse_job, job_to_form_values, form_query, form_values_from_qs,
+    allowed_roots, is_allowed_path, parse_location_folder_name, list_location_folders,
+    sidecar_to_form_values, query_from_reopen_url, extract_form_from_pdf,
+)
+from pege_energy_sim_project_finance import (
+    INVEST_HTML, BASELINE_HTML, VARIANT_HTML, SIMULATE_HTML,
+    PF_STORE, pf_safe, pf_folder, pf_default_path, pf_ensure_default,
+    pf_ensure_loaded, pf_load, pf_save_default, pf_save_simulation, pf_save,
+    pf_complete_selects, pf_inject_selects, pf_fill_html,
+)
 
 HERE = Path(__file__).resolve().parent
+SETTINGS_PATH = HERE / "settings.json"
+
+def load_state():
+    global FORM_STATE
+    if SETTINGS_PATH.is_file():
+        try:
+            FORM_STATE.update(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+
+def save_state():
+    try:
+        SETTINGS_PATH.write_text(json.dumps(FORM_STATE, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+load_state()
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 try:
@@ -48,463 +95,16 @@ except Exception:
 
 
 
-INVEST_HTML = """
-<h2>Investment model</h2>
-<nav style="margin-bottom:14px">
-  <a href="/investment">General</a> |
-  <a href="/investment/baseline">Baseline</a> |
-  <a href="/investment/a">A</a> |
-  <a href="/investment/b">B</a> |
-  <a href="/investment/c">C</a> |
-  <a href="/investment/d">D</a> |
-  <a href="/investment/e">E</a> |
-  <a href="/investment/run">Run</a>
-</nav>
-<form method="post" action="/investment">
-  <h3>Money and time</h3>
-  <div style="display:flex;gap:12px;flex-wrap:wrap">
-    <div><label>Bank interest %</label><br><input name="bank_int" value="0.5" style="width:90px"></div>
-    <div><label>Credit interest %</label><br><input name="credit_int" value="4" style="width:90px"></div>
-    <div><label>General inflation %</label><br><input name="inf_gen" value="2.5" style="width:90px"></div>
-    <div><label>Electricity inflation %</label><br><input name="inf_el" value="3" style="width:90px"></div>
-    <div><label>Fossil inflation %</label><br><input name="inf_fos" value="3.5" style="width:90px"></div>
-  </div>
-  <h3>Credit run time and depreciation</h3>
-  <table>
-    <tr><th></th><th>PV</th><th>Battery</th><th>Heat pump</th><th>House</th><th>Ground</th></tr>
-    <tr><td>Credit years</td>
-      <td><input name="pv_y" value="25" style="width:70px"></td>
-      <td><input name="bat_y" value="15" style="width:70px"></td>
-      <td><input name="hp_y" value="15" style="width:70px"></td>
-      <td><input name="house_y" value="30" style="width:70px"></td>
-      <td><input name="ground_y" value="30" style="width:70px"></td>
-    </tr>
-    <tr><td>Depreciation % / year</td>
-      <td><input name="pv_p" value="3" style="width:70px"></td>
-      <td><input name="bat_p" value="4" style="width:70px"></td>
-      <td><input name="hp_p" value="4" style="width:70px"></td>
-      <td><input name="house_p" value="1" style="width:70px"></td>
-      <td><input name="ground_p" value="0" style="width:70px"></td>
-    </tr>
-  </table>
-  <div class="field wide"><label>Description</label><textarea name="gen_desc" rows="3">Typically in Austria in the last 25 years</textarea></div>
-  <h3>Project</h3>
-  <div class="field"><label>Project name</label><input name="proj_name" value="5 variants for my house improvement"></div>
-  <div class="field wide"><label>Project description</label><textarea name="proj_desc" rows="3">Scenario 5 with all the photovoltaic looks great but now to find out about money</textarea></div>
-  <button type="submit">Save general</button>
-</form>
-"""
-
-BASELINE_HTML = """
-<h2>Investment model</h2>
-<nav style="margin-bottom:14px">
-  <a href="/investment">General</a> |
-  <a href="/investment/baseline">Baseline</a> |
-  <a href="/investment/a">A</a> |
-  <a href="/investment/b">B</a> |
-  <a href="/investment/c">C</a> |
-  <a href="/investment/d">D</a> |
-  <a href="/investment/e">E</a> |
-  <a href="/investment/run">Run</a>
-</nav>
-<form method="post" action="/investment/baseline">
-  <h3>Baseline</h3>
-  <p class="hint">Monthly electricity and fossil can be entered only when "no stored scenario" is selected. Otherwise the energy is handled by the selected scenario.</p>
-  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-    <div><label>Money on the bank</label><br><input name="base_money" value="0" style="width:120px"></div>
-    <div><label>Monthly electricity</label><br><input name="base_el" id="baseEl" value="150" style="width:120px"></div>
-    <div><label>Monthly fossil</label><br><input name="base_fos" id="baseFos" value="250" style="width:120px"></div>
-  </div>
-  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
-    <div style="flex:1"><label>Starting scenario — object</label><br>
-      <select name="base_object" id="baseObj" style="width:100%"><option value="">— no stored scenario —</option></select>
-    </div>
-    <div style="flex:1"><label>Starting scenario — simulation</label><br>
-      <select name="base_file" id="baseFile" style="width:100%"><option value="">— simulation —</option></select>
-    </div>
-  </div>
-  <div class="field wide"><label>Description</label><textarea name="base_desc" rows="3">My old house burning fuel oil like crazy</textarea></div>
-  <button type="submit">Save baseline</button>
-</form>
-<script>
-function outdirQ() { return encodeURIComponent(location.search.includes("outdir=") ? new URLSearchParams(location.search).get("outdir") || "" : ""); }
-function fillBaseFile(obj) {
-  const sel = document.getElementById("baseFile");
-  sel.innerHTML = "<option value=''>— simulation —</option>";
-  if (!obj) return;
-  fetch("/api/object-files?object=" + encodeURIComponent(obj)).then(r => r.json()).then(data => {
-    (data.files || []).forEach(f => {
-      const opt = document.createElement("option");
-      opt.value = f.path; opt.textContent = f.name;
-      sel.appendChild(opt);
-    });
-  }).catch(() => {});
-}
-fetch("/api/workspace?outdir=" + outdirQ()).then(r => r.json()).then(data => {
-  const sel = document.getElementById("baseObj");
-  (data.objects || []).forEach(n => {
-    const opt = document.createElement("option");
-    opt.value = n; opt.textContent = n;
-    sel.appendChild(opt);
-  });
-}).catch(() => {});
-document.getElementById("baseObj").addEventListener("change", function () {
-  const has = !!this.value;
-  document.getElementById("baseEl").disabled = has;
-  document.getElementById("baseFos").disabled = has;
-  if (has) {
-    document.getElementById("baseEl").value = "0";
-    document.getElementById("baseFos").value = "0";
-    fillBaseFile(this.value);
-  } else {
-    document.getElementById("baseEl").value = "150";
-    document.getElementById("baseFos").value = "250";
-    fillBaseFile("");
-  }
-});
-</script>
-"""
-
-def _missing_demand(*_a, **_k):
-    return {}
-
-
-def _missing_demand_html(_v=None):
-    return (
-        "<p class='hint' style='color:#a00'>"
-        "pege_energy_sim_demand.py is missing. Put it in the same folder as pege_energy_sim_server_uses_default_browser_as_gui.py."
-        "</p>"
-    )
-
-
-try:
-    from pege_energy_sim_demand import demand_form_html, demand_to_form_values, parse_demand_fields  # noqa: E402
-except Exception as _exc:
-    print("WARNING: demand_model.py not loaded:", _exc)
-    demand_form_html = _missing_demand_html
-    demand_to_form_values = _missing_demand
-    parse_demand_fields = _missing_demand
-
-try:
-    from pege_energy_sim_report import (  # noqa: E402
-        CONFIG,
-        build_report,
-        list_objects,
-        location_remark,
-        location_stem,
-        object_definition_path,
-        object_folder,
-        objects_root,
-        sanitize_name,
-    )
-except Exception as _exc:
-    print("ERROR: cannot import pege_energy_sim_report.py:", _exc)
-    print("Put pege_energy_sim_report.py next to pege_energy_sim_server_uses_default_browser_as_gui.py.")
-    print("Also needed: pip install matplotlib numpy pandas")
-    if __name__ == "__main__":
-        traceback.print_exc()
-        try:
-            input("\nPress Enter to close...")
-        except Exception:
-            pass
-    raise
-
-def _need_packages() -> None:
-    missing = []
-    for name in ("numpy", "pandas", "matplotlib", "requests"):
-        try:
-            __import__(name)
-        except Exception:
-            missing.append(name)
-    if not missing:
-        return
-    text = (
-        "PEGE energy sim cannot start.\n\n"
-        "These Python packages are missing:\n"
-        + "\n".join(missing)
-        + "\n\nInstall them, then start again:\n"
-        "pip install numpy pandas matplotlib requests\n\n"
-        "On Linux, if pip is missing: sudo apt install python3-pip"
-    )
-    print("\n" + text + "\n")
-    try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        messagebox.showerror("PEGE energy sim — missing packages", text)
-        root.destroy()
-    except Exception:
-        pass
-    raise SystemExit(1)
-
-
-_need_packages()
-
-HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
-# Folder the process was started in. Objects, locations and compares live here.
-START_DIR = Path.cwd().resolve()
-
-
-def data_root() -> Path:
-    """Always the folder where pege_energy_sim_server_uses_default_browser_as_gui.py was started."""
-    return START_DIR
-N_ROWS = 25
-JOB_LOCK = threading.Lock()
-STOP = {"flag": False}
-ARTIFACTS: dict[str, Path] = {}
-LAST_FORM: dict[str, str] = {}
-BASE_URL = f"http://{HOST}:{DEFAULT_PORT}"
-DEFAULT_OBJECT = "GEMINI-60-house-with-garage"
-
-
-def workspace_roots() -> list[Path]:
-    roots: list[Path] = []
-    for raw in (HERE, Path.cwd()):
-        try:
-            roots.append(raw.expanduser().resolve())
-        except Exception:
-            pass
-    if LAST_FORM.get("outdir"):
-        try:
-            roots.append(Path(LAST_FORM["outdir"]).expanduser().resolve())
-        except Exception:
-            pass
-    out, seen = [], set()
-    for r in roots:
-        if r in seen:
-            continue
-        seen.add(r)
-        out.append(r)
-    return out
-
-
-def find_object_json(object_name: str) -> Path | None:
-    name = sanitize_name(object_name or DEFAULT_OBJECT)
-    if not name:
-        return None
-    for root in workspace_roots():
-        for path in (
-            root / "objects" / name / f"{name}.json",
-            root / "objects" / f"{name}.json",
-            root / f"{name}.json",
-        ):
-            if path.is_file():
-                return path
-    return None
-
-
-def values_from_object_file(path: Path) -> dict[str, str]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    vals = data.get("form_values") or sidecar_to_form_values(data) or {}
-    if data.get("demand"):
-        vals.update(demand_to_form_values(data["demand"]))
-    vals = {str(k): "" if v is None else str(v) for k, v in vals.items()}
-    vals["object"] = data.get("object") or path.stem
-    # Output root is the folder where this server was started, not a saved path.
-    vals.pop("outdir", None)
-    return vals
-
-
-def startup_form_values() -> dict[str, str]:
-    path = find_object_json(DEFAULT_OBJECT)
-    if path is None:
-        names = []
-        for root in workspace_roots():
-            names.extend(list_objects(root))
-        if names:
-            path = find_object_json(names[0])
-    if path is None:
-        return {"object": DEFAULT_OBJECT}
-    try:
-        print(f"{datetime.now():%Y-%m-%d %H:%M}  startup object {path}")
-        return values_from_object_file(path)
-    except Exception as exc:
-        print(f"Could not read {path}: {exc}")
-        return {"object": DEFAULT_OBJECT}
-
-
-def find_chromium() -> str:
-    env = os.environ.get("CHROMIUM") or os.environ.get("BROWSER_CHROMIUM")
-    if env and Path(env).exists():
-        return env
-    names = (
-        "chromium",
-        "chromium-browser",
-        "chromium-browser-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/snap/bin/chromium",
-        "/usr/lib/chromium/chromium",
-        "google-chrome",
-        "google-chrome-stable",
-        "/usr/bin/google-chrome",
-    )
-    for name in names:
-        found = shutil.which(name) if "/" not in name else (name if Path(name).exists() else None)
-        if found:
-            return found
-    raise FileNotFoundError(
-        "Chromium not found. Install chromium, or set CHROMIUM=/path/to/chromium"
-    )
-
-
-def open_browser(url: str):
-    """Default OS browser (Windows / Linux / macOS). Chromium only if forced."""
-    import webbrowser
-
-    if os.environ.get("BROWSER_CHROMIUM"):
-        binary = find_chromium()
-        print(f"{datetime.now():%Y-%m-%d %H:%M}  opening {binary}")
-        return subprocess.Popen(
-            [binary, "--new-window", url],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    print(f"{datetime.now():%Y-%m-%d %H:%M}  opening default browser {url}")
-    webbrowser.open(url)
-    return None
-
-
-def page_shell(title: str, body: str) -> bytes:
-    doc = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{html.escape(title)}</title>
-<link rel="icon" href="/favicon.ico" sizes="any">
-<link rel="icon" type="image/png" href="/pege-logo.png">
-<style>
-  :root {{
-    --eu: #003399;
-    --eu2: #1a4dad;
-    --line: #d5dbe6;
-    --bg: #f3f5f8;
-  }}
-  html, body {{ margin: 0; padding: 0; background: var(--bg);
-    font: 14px/1.4 "Segoe UI", DejaVu Sans, sans-serif; color: #1a1a1a; }}
-  header {{ background: var(--eu); color: #fff; position: relative; padding: 12px 20px; }}
-  header h1 {{ margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .02em; }}
-  header p {{ margin: 4px 0 0; font-size: 12px; opacity: .85; }}
-  main {{ max-width: 1180px; margin: 16px auto 40px; background: #fff;
-    border: 1px solid var(--line); padding: 16px 18px 22px; }}
-  label {{ display: block; font-size: 12px; color: #445; margin-bottom: 3px; }}
-  input, select {{ font: inherit; padding: 5px 7px; border: 1px solid #b8c0cc;
-    border-radius: 3px; background: #fff; }}
-  input:focus, select:focus {{ outline: 2px solid #9bb6ff; border-color: var(--eu2); }}
-  .row {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }}
-  .field {{ display: flex; flex-direction: column; }}
-  .field.name {{ flex: 2; min-width: 180px; }}
-  .field.coord {{ width: 140px; }}
-  .field.small {{ width: 148px; }}
-  .field.wide {{ flex: 1; min-width: 220px; }}
-  .field.tiny {{ width: 64px; }}
-  fieldset {{ border: 1px solid var(--line); margin: 14px 0; padding: 10px 12px 6px; }}
-  fieldset legend {{ font-weight: 650; color: var(--eu); padding: 0 6px; }}
-  table.inline-fields {{ width: 100%; table-layout: fixed; margin: 4px 0 8px; }}
-  table.inline-fields th {{ white-space: nowrap; font-weight: 600; }}
-  table.inline-fields td {{ padding: 2px 4px; }}
-  table.inline-fields input {{ width: 100%; box-sizing: border-box; }}
-  main {{ max-width: 1180px; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 8px 0 14px; }}
-  th {{ text-align: left; font-size: 12px; color: #334; padding: 4px 6px;
-    border-bottom: 2px solid var(--eu); }}
-  td {{ padding: 3px 6px; border-bottom: 1px solid #eef1f5; }}
-  td.n {{ width: 36px; color: #667; text-align: right; }}
-  td.pvname {{ width: 24%; }}
-  td.bi {{ width: 56px; text-align: center; }}
-  td.bi input {{ width: auto; }}
-  td input {{ width: 100%; box-sizing: border-box; }}
-  .hint {{ font-size: 12px; color: #556; margin: 0 0 10px; }}
-  button {{ background: var(--eu); color: #fff; border: 0; padding: 8px 18px;
-    font: 600 14px inherit; border-radius: 3px; cursor: pointer; }}
-  button:hover {{ background: var(--eu2); }}
-  button.secondary {{ background: #fff; color: var(--eu); border: 1px solid var(--eu); }}
-  #browser {{ margin: 12px 0 16px; border: 1px solid var(--line); padding: 10px 12px; background: #fafbfd; }}
-  #browser[hidden] {{ display: none; }}
-  #browser h2 {{ margin: 0 0 8px; font-size: 14px; }}
-  #browser .folder {{ margin: 8px 0; }}
-  #browser .folder > .fname {{ font-weight: 650; }}
-  #browser ul {{ margin: 4px 0 0 18px; padding: 0; }}
-  #browser li {{ list-style: disc; margin: 2px 0; font-size: 13px; }}
-  #browser a.pdf {{ font-weight: 650; }}
-  #browser .other {{ color: #667; }}
-  .actions {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
-  a {{ color: var(--eu); text-decoration: none; }}
-  a:hover {{ background: #eef3fb; }}
-  pre.log, div.log {{ background: #0f1a2b; color: #d6e2f0; padding: 12px 14px;
-    font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap;
-    max-height: 70vh; overflow: auto; }}
-  .ok {{ color: #b6f3c4; }}
-  .err {{ color: #ffb3b3; }}
-  .nav {{ margin: 12px 0; }}
-  nav.menu {{ display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; }}
-  nav.menu a {{ color: #fff; text-decoration: none; font-size: 14px; }}
-  nav.menu a:hover {{ background: rgba(255,255,255,0.18); border-radius: 3px; }}
-  button.mv {{ width: 18px; height: 16px; padding: 0; margin: 0 1px; font-size: 10px; line-height: 14px; }}
-  td.n {{ white-space: nowrap; width: 48px; }}
-</style>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-
-</script>
-<script>
-(function () {{
-  function pin() {{
-    var box = document.getElementById("log");
-    if (!box) return;
-    var near = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-    if (near) box.scrollTop = box.scrollHeight;
-  }}
-  setInterval(pin, 200);
-  document.addEventListener("DOMContentLoaded", pin);
-}})();
-</script>
-</head>
-<body>
-<header>
-  <h1>PEGE energy sim</h1>
-  <p>Local server — form posts back here — Default browser used as GUI</p>
-  <a href="/version-test" style="position:absolute;right:0;top:0;width:80px;height:100%;"></a>
-  <div id="verbox" style="display:none;position:absolute;right:12px;top:8px;background:#fff8d6;color:#6a5200;padding:8px 12px;border-radius:4px;max-width:360px;font-size:13px">
-    A newer version is listed.
-    <div style="margin-top:6px"><a href="https://github.com/pegefounder/energy-sim" target="_blank">GitHub code only</a></div>
-    <div><a href="https://pege.org/energy-sim/" target="_blank">PEGE.org code with examples</a></div>
-  </div>
-  <nav class="menu">
-    <a href="/files">Files</a>
-    <a href="/form">Object house</a>
-    <a href="/compare-houses">Compare houses</a>
-    <a href="/investment">Investment model</a>
-    <a href="/objects">Other objects</a>
-    <a href="/community">Community</a>
-    <a href="/compare-communities">Compare communities</a>
-    <a href="/about">About</a>
-  </nav>
-</header>
-<main>
-{body}
-</main>
-</body>
-</html>
-"""
-    return doc.encode("utf-8")
-
-
-
 FILES_HTML = """
 <h2 id="filesTitle">Objects</h2>
 <nav style="margin:8px 0 14px">
   <a href="/files" style="margin-right:16px">Objects</a>
   <a href="/files?tab=compares" style="margin-right:16px">Compares</a>
   <a href="/files?tab=locations" style="margin-right:16px">Locations</a>
-  <a href="/files?tab=investment" style="margin-right:16px">Investment models</a>
+  <a href="/files?tab=investment" style="margin-right:16px">Project finances</a>
   <a href="/files?tab=other">Other</a>
   <button type="button" id="rerunAll" style="margin-left:16px;display:none">rerun all marked object reports</button>
+  <button type="button" id="deleteMarked" style="margin-left:8px;display:none">delete marked</button>
 </nav>
 <p class="hint" id="filesStatus">Reading…</p>
 <div id="filesList"></div>
@@ -512,7 +112,7 @@ FILES_HTML = """
 <script>
 (function () {
   const tab = new URLSearchParams(location.search).get("tab") || "objects";
-  const titles = {objects: "Objects", compares: "Compares", locations: "Locations", investment: "Investment models", other: "Other"};
+  const titles = {objects: "Objects", compares: "Compares", locations: "Locations", investment: "Project finances", other: "Other"};
   document.getElementById("filesTitle").textContent = titles[tab] || "Objects";
   const list = document.getElementById("filesList");
   const status = document.getElementById("filesStatus");
@@ -520,32 +120,88 @@ FILES_HTML = """
     const groups = data[tab] || [];
     status.textContent = groups.length ? "" : "Nothing here.";
     if (tab === "investment") {
-      groups.forEach(function (g) {
-        const table = document.createElement("table");
-        table.innerHTML = "<thead><tr><th>open</th><th>edit</th><th>" + g.name + "</th></tr></thead>";
-        const body = document.createElement("tbody");
-        (g.files || []).forEach(function (f) {
-          const tr = document.createElement("tr");
-          const open = document.createElement("td");
-          if (f.href && f.name.toLowerCase().endsWith(".pdf") === false && f.href.includes(".pdf")) {
-            open.innerHTML = '<a href="' + f.href + '" target="_blank">open</a>';
-          } else if (f.href && f.href.includes(".pdf")) {
-            open.innerHTML = '<a href="' + f.href + '" target="_blank">open</a>';
-          } else {
-            open.textContent = "";
-          }
-          const edit = document.createElement("td");
-          if (f.json) {
-            edit.innerHTML = '<a href="/investment?json=' + encodeURIComponent(f.json) + '">edit</a>';
-          }
-          const name = document.createElement("td");
-          name.textContent = f.name;
-          tr.appendChild(open); tr.appendChild(edit); tr.appendChild(name);
-          body.appendChild(tr);
+      const folder = new URLSearchParams(location.search).get("folder");
+      if (!folder) {
+        groups.forEach(function (g) {
+          const div = document.createElement("div");
+          div.className = "folder";
+          div.style.margin = "6px 0";
+          const a = document.createElement("a");
+          a.href = "/files?tab=investment&folder=" + encodeURIComponent(g.name);
+          a.textContent = g.name + " (" + (g.files || []).length + ")";
+          div.appendChild(a);
+          list.appendChild(div);
         });
-        table.appendChild(body);
-        list.appendChild(table);
+        return;
+      }
+      const g = groups.find(function (x) { return x.name === folder; });
+      if (!g) { status.textContent = "Folder not found."; return; }
+      const back = document.createElement("p");
+      back.innerHTML = '<a href="/files?tab=investment">← all projects</a>';
+      list.appendChild(back);
+      const table = document.createElement("table");
+      table.style.cssText = "width:100%;border-collapse:collapse";
+      table.innerHTML = "<thead><tr><th style='width:50px'>open</th><th style='width:40px'>edit</th><th style='width:40px'>mark</th><th>" + folder + "</th></tr></thead>";
+      const body = document.createElement("tbody");
+      const marks = JSON.parse(localStorage.getItem("pfMarks") || "{}");
+      function updateDel() {
+        const m = JSON.parse(localStorage.getItem("pfMarks") || "{}");
+        const present = {};
+        (g.files || []).forEach(function (f) { present[folder + "/" + f.name] = true; });
+        const sel = Object.keys(m).filter(function (k) { return m[k] && present[k]; });
+        const del = document.getElementById("deleteMarked");
+        if (del) {
+          del.style.display = "inline";
+          del.textContent = "Delete all marked in this folder (" + sel.length + ")";
+          del.onclick = function () {
+            if (!sel.length) return;
+            const names = sel.map(function (k) { return k.split("/").slice(1).join("/"); });
+            const box = document.createElement("div");
+            box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:99";
+            const card = document.createElement("div");
+            card.style.cssText = "background:#fff;padding:16px 20px;border-radius:6px;max-width:480px;max-height:70vh;overflow:auto";
+            card.innerHTML = "<p><b>Delete these " + names.length + " files?</b></p><ul style='margin:8px 0;padding-left:18px'>" + names.map(function (n) { return "<li>" + n + "</li>"; }).join("") + "</ul>";
+            const cancel = document.createElement("button");
+            cancel.textContent = "Cancel";
+            cancel.onclick = function () { box.remove(); };
+            const ok = document.createElement("button");
+            ok.textContent = "Delete";
+            ok.style.marginLeft = "8px";
+            ok.onclick = function () {
+              window.location = "/delete-files?files=" + encodeURIComponent(sel.join("|")) + "&back=" + encodeURIComponent(location.pathname + location.search);
+            };
+            card.appendChild(cancel); card.appendChild(ok);
+            box.appendChild(card);
+            document.body.appendChild(box);
+          };
+        }
+      }
+      (g.files || []).forEach(function (f) {
+        const tr = document.createElement("tr");
+        const open = document.createElement("td");
+        if (f.href) open.innerHTML = '<a href="' + f.href + '" target="_blank">open</a>';
+        const edit = document.createElement("td");
+        if (f.edit) edit.innerHTML = '<a href="' + f.edit + '">edit</a>';
+        const mark = document.createElement("td");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        const key = folder + "/" + f.name;
+        cb.checked = !!marks[key];
+        cb.onchange = function () {
+          const m = JSON.parse(localStorage.getItem("pfMarks") || "{}");
+          m[key] = cb.checked;
+          localStorage.setItem("pfMarks", JSON.stringify(m));
+          updateDel();
+        };
+        mark.appendChild(cb);
+        const name = document.createElement("td");
+        name.textContent = f.name;
+        tr.appendChild(open); tr.appendChild(edit); tr.appendChild(mark); tr.appendChild(name);
+        body.appendChild(tr);
       });
+      table.appendChild(body);
+      list.appendChild(table);
+      updateDel();
       return;
     }
     if (tab === "objects") {
@@ -587,6 +243,52 @@ FILES_HTML = """
           div.appendChild(cb);
           list.appendChild(div);
         });
+        const marksNow = JSON.parse(localStorage.getItem("rerunMarks") || "{}");
+        const valid = {};
+        (data.objects || []).forEach(function (g) {
+          (g.files || []).forEach(function (f) {
+            const key = g.name + "/" + f.name;
+            if (marksNow[key]) valid[key] = true;
+          });
+        });
+        localStorage.setItem("rerunMarks", JSON.stringify(valid));
+        const selectedKeys = Object.keys(valid);
+        const btn = document.getElementById("rerunAll");
+        const del = document.getElementById("deleteMarked");
+        if (btn) {
+          btn.style.display = "inline";
+          btn.textContent = "rerun all marked object reports (" + selectedKeys.length + ")";
+          btn.onclick = function () {
+            if (!selectedKeys.length) return;
+            window.location = "/rerun?files=" + encodeURIComponent(selectedKeys.join("|"));
+          };
+        }
+        if (del) {
+          const inFolder = new URLSearchParams(location.search).get("folder");
+          del.style.display = inFolder ? "inline" : "none";
+          del.textContent = "Delete all marked objects in this folder (" + selectedKeys.length + ")";
+          del.onclick = function () {
+            if (!selectedKeys.length) return;
+            const names = selectedKeys.map(function (k) { return k.split("/").slice(1).join("/"); });
+            const box = document.createElement("div");
+            box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:99";
+            const card = document.createElement("div");
+            card.style.cssText = "background:#fff;padding:16px 20px;border-radius:6px;max-width:520px;max-height:70vh;overflow:auto";
+            card.innerHTML = "<p><b>Delete these " + names.length + " files?</b></p><ul style='margin:8px 0;padding-left:18px'>" + names.map(function (n) { return "<li>" + n + "</li>"; }).join("") + "</ul>";
+            const cancel = document.createElement("button");
+            cancel.textContent = "Cancel";
+            cancel.onclick = function () { box.remove(); };
+            const ok = document.createElement("button");
+            ok.textContent = "Delete";
+            ok.style.marginLeft = "8px";
+            ok.onclick = function () {
+              window.location = "/delete-files?files=" + encodeURIComponent(selectedKeys.join("|"));
+            };
+            card.appendChild(cancel); card.appendChild(ok);
+            box.appendChild(card);
+            document.body.appendChild(box);
+          };
+        }
         return;
       }
       const g = groups.filter(function (x) { return x.name === folder; })[0];
@@ -595,21 +297,70 @@ FILES_HTML = """
       back.innerHTML = "<a href='/files'>All objects</a>";
       list.appendChild(back);
       const table = document.createElement("table");
-      table.innerHTML = "<thead><tr><th>open</th><th>edit</th><th>" + folder + "</th><th>by</th><th>rerun</th></tr></thead>";
+      table.style.cssText = "width:100%;border-collapse:collapse";
+      table.innerHTML = "<thead><tr><th style='width:50px'>open</th><th style='width:40px'>edit</th><th>" + folder + "</th><th style='width:40px'>by</th><th style='width:40px'>mark</th><th style='width:36px'></th></tr></thead>";
       const body = document.createElement("tbody");
       const marks = JSON.parse(localStorage.getItem("rerunMarks") || "{}");
       function updateBtn() {
-        const any = Object.values(JSON.parse(localStorage.getItem("rerunMarks") || "{}")).some(Boolean);
+        const marks = JSON.parse(localStorage.getItem("rerunMarks") || "{}");
+        const selected = Object.keys(marks).filter(function (k) { return marks[k] && k.startsWith(folder + "/"); });
         const btn = document.getElementById("rerunAll");
-        if (btn) btn.style.display = any ? "inline" : "none";
+        const del = document.getElementById("deleteMarked");
+        if (btn) { btn.style.display = "inline"; btn.textContent = "rerun all marked object reports (" + selected.length + ")"; }
+        if (del) {
+          del.style.display = "inline";
+          del.textContent = "Delete all marked objects in this folder (" + selected.length + ")";
+          del.onclick = function () {
+            if (!selected.length) return;
+            const names = selected.map(function (k) { return k.split("/").slice(1).join("/"); });
+            const box = document.createElement("div");
+            box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:99";
+            const card = document.createElement("div");
+            card.style.cssText = "background:#fff;padding:16px 20px;border-radius:6px;max-width:520px;max-height:70vh;overflow:auto";
+            card.innerHTML = "<p><b>Delete these " + names.length + " files?</b></p><ul style='margin:8px 0;padding-left:18px'>" + names.map(function (n) { return "<li>" + n + "</li>"; }).join("") + "</ul>";
+            const cancel = document.createElement("button");
+            cancel.textContent = "Cancel";
+            cancel.onclick = function () { box.remove(); };
+            const ok = document.createElement("button");
+            ok.textContent = "Delete";
+            ok.style.marginLeft = "8px";
+            ok.onclick = function () {
+              window.location = "/delete-files?files=" + encodeURIComponent(selected.join("|"));
+            };
+            card.appendChild(cancel); card.appendChild(ok);
+            box.appendChild(card);
+            document.body.appendChild(box);
+          };
+        }
       }
       const menuBtn = document.getElementById("rerunAll");
       if (menuBtn) menuBtn.onclick = function () {
-        const selected = Object.keys(JSON.parse(localStorage.getItem("rerunMarks") || "{}")).filter(function (k) {
-          return JSON.parse(localStorage.getItem("rerunMarks") || "{}")[k];
+        const folder = new URLSearchParams(location.search).get("folder") || "";
+        const all = JSON.parse(localStorage.getItem("rerunMarks") || "{}");
+        const selected = Object.keys(all).filter(function (k) {
+          if (!all[k]) return false;
+          if (folder) return k.startsWith(folder + "/");
+          return true;
         });
         if (!selected.length) return;
-        window.location = "/rerun?files=" + encodeURIComponent(selected.join("|"));
+        const names = selected.map(function (k) { return k.split("/").slice(1).join("/"); });
+        const box = document.createElement("div");
+        box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:99";
+        const card = document.createElement("div");
+        card.style.cssText = "background:#fff;padding:16px 20px;border-radius:6px;max-width:560px;max-height:70vh;overflow:auto";
+        card.innerHTML = "<p><b>Rerun these " + names.length + " reports?</b></p><ul style='margin:8px 0;padding-left:18px;max-height:40vh;overflow:auto'>" + names.map(function (n) { return "<li>" + n + "</li>"; }).join("") + "</ul>";
+        const cancel = document.createElement("button");
+        cancel.textContent = "Cancel";
+        cancel.onclick = function () { box.remove(); };
+        const ok = document.createElement("button");
+        ok.textContent = "Rerun";
+        ok.style.marginLeft = "8px";
+        ok.onclick = function () {
+          window.location = "/rerun?files=" + encodeURIComponent(selected.join("|"));
+        };
+        card.appendChild(cancel); card.appendChild(ok);
+        box.appendChild(card);
+        document.body.appendChild(box);
       };
       (g.files || []).forEach(function (f) {
         const tr = document.createElement("tr");
@@ -622,9 +373,13 @@ FILES_HTML = """
         edit.appendChild(ea);
         const name = document.createElement("td");
         name.textContent = f.name;
+        name.style.cssText = "white-space:nowrap";
+        name.title = f.name;
         const by = document.createElement("td");
-        by.textContent = f.version || "0.0";
+        by.textContent = f.version || "0.2";
         const rerun = document.createElement("td");
+        const flagTd = document.createElement("td");
+        flagTd.style.cssText = "padding:2px 4px";
         if (!f.name.endsWith("  (object)")) {
           const cb = document.createElement("input");
           cb.type = "checkbox";
@@ -637,8 +392,22 @@ FILES_HTML = """
             updateBtn();
           };
           rerun.appendChild(cb);
+          const lang = f.pdf_language || f.language || "english";
+          const pos = {english:[362,2],german:[322,2],spanish:[2,32],portugese:[322,32],french:[42,32],italian:[122,32],polish:[282,32],czech:[482,2],slovak:[442,32],hungarian:[82,32],romanian:[362,32],slovenian:[482,32],croatian:[562,64]};
+          const xy = pos[lang] || pos.english;
+          const outer = document.createElement("div");
+          outer.style.cssText = "width:36px;height:24px;overflow:hidden;position:relative";
+          const img = document.createElement("img");
+          img.src = "https://www.pege.org/pic/2024-01-18-logo.png";
+          img.style.cssText = "position:absolute;left:" + (-xy[0]) + "px;top:" + (-xy[1]) + "px;border:0;cursor:pointer";
+          img.title = lang;
+          img.onclick = function () { location.href = "/pdf-output?lang=" + encodeURIComponent(lang); };
+          img.onmouseover = function () { outer.style.outline = "2px solid #3584e4"; };
+          img.onmouseout = function () { outer.style.outline = ""; };
+          outer.appendChild(img);
+          flagTd.appendChild(outer);
         }
-        tr.appendChild(open); tr.appendChild(edit); tr.appendChild(name); tr.appendChild(by); tr.appendChild(rerun);
+        tr.appendChild(open); tr.appendChild(edit); tr.appendChild(name); tr.appendChild(by); tr.appendChild(rerun); tr.appendChild(flagTd);
         body.appendChild(tr);
       });
       table.appendChild(body);
@@ -648,26 +417,168 @@ FILES_HTML = """
     }
     groups.forEach(function (g) {
       const div = document.createElement("div");
-      div.className = "folder";
-      const title = document.createElement("div");
-      title.className = "fname";
-      title.textContent = g.name;
-      div.appendChild(title);
-      const ul = document.createElement("ul");
-      (g.files || []).forEach(function (f) {
-        const li = document.createElement("li");
-        const a = document.createElement("a");
-        a.href = f.href;
-        a.textContent = f.name;
-        if (f.download) a.setAttribute("download", "");
-        li.appendChild(a);
-        ul.appendChild(li);
+    if (tab === "compares") {
+      const del = document.createElement("button");
+      del.id = "deleteMarked";
+      del.style.display = "none";
+      del.style.marginBottom = "8px";
+      list.appendChild(del);
+      groups.forEach(function (g) {
+        const marks = JSON.parse(localStorage.getItem("cmpMarks") || "{}");
+        const table = document.createElement("table");
+        table.style.cssText = "width:100%;border-collapse:collapse";
+        table.innerHTML = "<thead><tr><th style='width:50px'>open</th><th style='width:40px'>mark</th><th>" + g.name + "</th></tr></thead>";
+        const body = document.createElement("tbody");
+        function updateDel() {
+          const m = JSON.parse(localStorage.getItem("cmpMarks") || "{}");
+          const sel = Object.keys(m).filter(function (k) { return m[k]; });
+          del.style.display = "inline";
+          del.textContent = "Delete all marked (" + sel.length + ")";
+          del.onclick = function () {
+            if (!sel.length) return;
+            const names = sel.map(function (k) { return k.split("/").slice(1).join("/"); });
+            const box = document.createElement("div");
+            box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:99";
+            const card = document.createElement("div");
+            card.style.cssText = "background:#fff;padding:16px 20px;border-radius:6px;max-width:480px;max-height:70vh;overflow:auto";
+            card.innerHTML = "<p><b>Delete these " + names.length + " files?</b></p><ul style='margin:8px 0;padding-left:18px'>" + names.map(function (n) { return "<li>" + n + "</li>"; }).join("") + "</ul>";
+            const cancel = document.createElement("button");
+            cancel.textContent = "Cancel";
+            cancel.onclick = function () { box.remove(); };
+            const ok = document.createElement("button");
+            ok.textContent = "Delete";
+            ok.style.marginLeft = "8px";
+            ok.onclick = function () {
+              window.location = "/delete-files?files=" + encodeURIComponent(sel.join("|")) + "&back=" + encodeURIComponent(location.pathname + location.search);
+            };
+            card.appendChild(cancel); card.appendChild(ok);
+            box.appendChild(card);
+            document.body.appendChild(box);
+          };
+        }
+        (g.files || []).forEach(function (f) {
+          const tr = document.createElement("tr");
+          const open = document.createElement("td");
+          if (f.href) open.innerHTML = '<a href="' + f.href + '" target="_blank">open</a>';
+          const mark = document.createElement("td");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          const key = g.name + "/" + f.name;
+          cb.checked = !!marks[key];
+          cb.onchange = function () {
+            const m = JSON.parse(localStorage.getItem("cmpMarks") || "{}");
+            m[key] = cb.checked;
+            localStorage.setItem("cmpMarks", JSON.stringify(m));
+            updateDel();
+          };
+          mark.appendChild(cb);
+          const name = document.createElement("td");
+          name.textContent = f.name;
+          name.style.cssText = "white-space:nowrap";
+          name.title = f.name;
+          tr.appendChild(open); tr.appendChild(mark); tr.appendChild(name);
+          body.appendChild(tr);
+        });
+        table.appendChild(body);
+        list.appendChild(table);
+        updateDel();
       });
-      div.appendChild(ul);
-      list.appendChild(div);
+      return;
+    }
     });
   }).catch(function (err) { status.textContent = String(err); });
 })();
+</script>
+"""
+
+
+OBJECTS_HTML = """
+<h2>Other objects</h2>
+<p class="hint">Yield and demand model shared with house. Select or define an other object (garage, settlement part, etc.).</p>
+<div class="row">
+  <div class="field name"><label>Object</label><select id="objPick"><option value="">— select —</option></select></div>
+  <div class="field wide"><label>Simulation</label><select id="simPick"><option value="">— select —</option></select></div>
+</div>
+<p class="hint">Full form for other object types will reuse the house yield/demand engine.</p>
+<div class="actions">
+  <button type="button" onclick="location.href='/form'">Open as house form</button>
+</div>
+<p><a href="/form">Back to main</a></p>
+<script>
+fetch("/api/workspace").then(r => r.json()).then(d => {
+  const sel = document.getElementById("objPick");
+  (d.objects || []).forEach(n => {
+    const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
+  });
+});
+document.getElementById("objPick").addEventListener("change", function() {
+  const sSel = document.getElementById("simPick");
+  sSel.innerHTML = "<option value=''>— select —</option>";
+  if (!this.value) return;
+  fetch("/api/object-files?object=" + encodeURIComponent(this.value)).then(r => r.json()).then(data => {
+    (data.files || []).forEach(f => {
+      const o = document.createElement("option"); o.value = f.path; o.textContent = f.name; sSel.appendChild(o);
+    });
+  });
+});
+</script>
+"""
+
+COMMUNITY_HTML = """
+<h2>Community</h2>
+<p class="hint">Community runs (DC bus between houses, shared storage, power-to-X) — version 1.0 feature. Yield and demand shared with house.</p>
+<div class="row">
+  <div class="field name"><label>Community object</label><select id="commObj"><option value="">— select —</option></select></div>
+</div>
+<p class="hint">Select houses that belong to the community. Full simulation engine will be added.</p>
+<div class="actions">
+  <button type="button" disabled>Run community simulation (soon)</button>
+</div>
+<p><a href="/form">Back to main</a></p>
+<script>
+fetch("/api/workspace").then(r => r.json()).then(d => {
+  const sel = document.getElementById("commObj");
+  (d.objects || []).forEach(n => {
+    const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
+  });
+});
+</script>
+"""
+
+COMPARE_COMMUNITIES_HTML = """
+<h2>Compare communities</h2>
+<p class="hint">Difference is B − A. Same colour rules as house compare.</p>
+<div class="row">
+  <div class="field name"><label>Community A</label><select id="cA"><option value="">— select —</option></select></div>
+  <div class="field wide"><label>Simulation A</label><select id="sA"><option value="">— file —</option></select></div>
+</div>
+<div class="row">
+  <div class="field name"><label>Community B</label><select id="cB"><option value="">— select —</option></select></div>
+  <div class="field wide"><label>Simulation B</label><select id="sB"><option value="">— file —</option></select></div>
+</div>
+<p class="hint" id="cStatus"></p>
+<div class="actions"><button type="button" id="cBtn" disabled>Compare — write PDF (soon)</button></div>
+<p><a href="/form">Back to main</a></p>
+<script>
+function fill(sel, obj) {
+  sel.innerHTML = "<option value=''>— file —</option>";
+  if (!obj) return;
+  fetch("/api/object-files?object=" + encodeURIComponent(obj)).then(r => r.json()).then(data => {
+    (data.files || []).forEach(f => {
+      const o = document.createElement("option"); o.value = f.path; o.textContent = f.name; sel.appendChild(o);
+    });
+  });
+}
+fetch("/api/workspace").then(r => r.json()).then(d => {
+  ["cA","cB"].forEach(id => {
+    const sel = document.getElementById(id);
+    (d.objects || []).forEach(n => {
+      const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
+    });
+  });
+});
+document.getElementById("cA").addEventListener("change", function() { fill(document.getElementById("sA"), this.value); });
+document.getElementById("cB").addEventListener("change", function() { fill(document.getElementById("sB"), this.value); });
 </script>
 """
 
@@ -722,865 +633,45 @@ COMPARE_HTML = """
 </script>
 """
 
-def form_html(values: dict | None = None) -> bytes:
-    v = values or {}
-    name = html.escape(str(v.get("name", CONFIG["name"])))
+
+def remote_version(timeout: float = 5.0) -> str | None:
+    """Read README.md from GitHub, find the highest ## YYYY-MM-DD Version N line.
+    Returns the highest version number as a string, or None if the fetch fails.
+    A short timeout keeps the program usable without internet."""
     try:
-        _lat = float(str(v.get("lat", CONFIG["lat"])).replace(",", "."))
-        _lon = float(str(v.get("lon", CONFIG["lon"])).replace(",", "."))
-        _stored = location_remark(_lat, _lon, cache_dir=data_root())
-    except Exception:
-        _stored = ""
-    locremark = html.escape(str(v.get("locremark") or _stored))
-    lat = html.escape(str(v.get("lat", CONFIG["lat"])))
-    lon = html.escape(str(v.get("lon", CONFIG["lon"])))
-    obj = html.escape(str(v.get("object") or "GEMINI-60-house-with-garage"))
-    startyear = html.escape(str(v.get("startyear", CONFIG["startyear"])))
-    endyear = html.escape(str(v.get("endyear", CONFIG["endyear"])))
-    loss = html.escape(str(v.get("loss", CONFIG["loss"])))
-    outdir = html.escape(str(v.get("outdir", "")))
-    db = str(v.get("raddatabase", CONFIG["raddatabase"]))
-    horizon_on = v.get("usehorizon", "1" if CONFIG["usehorizon"] else "0") != "0"
-
-    db_opts = []
-    for opt in ("auto", "PVGIS-SARAH3", "PVGIS-NSRDB", "PVGIS-ERA5"):
-        sel = " selected" if opt == db else ""
-        db_opts.append(f'<option value="{opt}"{sel}>{opt}</option>')
-
-    # Defaults only on a fresh form. A selected object keeps its own rows, including none.
-    preset = [] if str(v.get("object") or "").strip() else list(CONFIG.get("pv") or [])
-    rows = []
-    for i in range(1, N_ROWS + 1):
-        pvn = sl = az = wp = ""
-        if i <= len(preset):
-            item = preset[i - 1]
-            if len(item) == 4:
-                pvn, sl, az, wp = item
-            else:
-                sl, az, wp = item
-                pvn = f"PV {i}"
-        if f"slope{i}" in v:
-            sl = v.get(f"slope{i}", sl)
-            az = v.get(f"az{i}", az)
-            wp = v.get(f"wp{i}", wp)
-            pvn = v.get(f"pvname{i}", pvn)
-        dist = v.get(f"dist{i}", "")
-        height = v.get(f"height{i}", "")
-        bi = str(v.get(f"bifacial{i}", "")).lower() in {"1", "on", "yes", "true"}
-        bi_chk = " checked" if bi else ""
-        bipct = v.get(f"bifaciality{i}", "80" if bi else "")
-        use_on = str(v.get(f"use{i}", "1")).lower() not in {"0", "off", "no", "false"}
-        use_chk = " checked" if use_on else ""
-        rows.append(
-            f"<tr><td class='n'><button type='button' class='mv' data-dir='-1'>↑</button><button type='button' class='mv' data-dir='1'>↓</button></td>"
-            f"<td class='bi'><input type='checkbox' name='use{i}' value='1'{use_chk}></td>"
-            f"<td class='pvname'><input name='pvname{i}' value='{html.escape(str(pvn))}' placeholder='e.g. Garden fence SW' data-clearrow='1'></td>"
-            f"<td><input name='slope{i}' value='{html.escape(str(sl))}' inputmode='decimal'></td>"
-            f"<td><input name='az{i}' value='{html.escape(str(az))}' inputmode='decimal'></td>"
-            f"<td><input name='wp{i}' value='{html.escape(str(wp))}' inputmode='decimal'></td>"
-            f"<td><input name='dist{i}' value='{html.escape(str(dist))}' inputmode='numeric' placeholder='m'></td>"
-            f"<td><input name='height{i}' value='{html.escape(str(height))}' inputmode='numeric' placeholder='m'></td>"
-            f"<td class='bi'><input type='checkbox' name='bifacial{i}' value='1' data-row='{i}'{bi_chk}></td>"
-            f"<td class='bipct'><input name='bifaciality{i}' value='{html.escape(str(bipct))}' inputmode='decimal' placeholder='80'></td></tr>"
+        import urllib.request
+        req = urllib.request.Request(
+            "https://raw.githubusercontent.com/pegefounder/energy-sim/main/README.md",
+            headers={"User-Agent": "PEGE-energy-sim"},
         )
-
-    hz = " checked" if horizon_on else ""
-    demand_block = demand_form_html(v)
-    body = f"""
-<div class="actions" style="margin-bottom:14px">
-  <button type="submit" form="pvform">Run — download missing files and write PDF</button>
-  <button type="submit" form="pvform" formaction="/set-default" formmethod="post" style="margin-left:12px">Make this configuration default for this object</button>
-</div>
-<form id="pvform" method="post" action="/run">
-  <div class="row">
-    <div class="field name"><label>Object (house / plant)</label>
-      <input name="object" id="objectName" value="{obj}" placeholder="GEMINI-60-house-with-garage"></div>
-    <div class="field name"><label>Existing objects</label>
-      <select id="objectPick"><option value="">— select —</option></select></div>
-    <div class="field name"><label>Existing locations</label>
-      <select id="locationPick"><option value="">— select —</option></select></div>
-  </div>
-  <p class="hint">
-    An <strong>object</strong> is the house (PV layout + demand). A <strong>location</strong> is climate
-    (folder <code>Country - place - lat - lon</code>). Pick both: same house near Berlin or in Krems.
-    Results go to <code>objects/&lt;object&gt;/Country - place - lat - lon.pdf</code>.
-    Weather CSV files stay in the location folder.
-  </p>
-  <div class="row">
-    <div class="field name"><label>Location name (country name - place name)</label>
-      <input name="name" value="{name}" required placeholder="Austria - Krems" autocomplete="off"></div>
-    <div class="field name"><label>Simulation name</label>
-      <input name="simname" value="{html.escape(str(v.get('simname','')))}" placeholder="Test without garden fence"></div>
-    <div class="field coord"><label>Latitude</label>
-      <input name="lat" value="{lat}" required inputmode="decimal"></div>
-    <div class="field coord"><label>Longitude</label>
-      <input name="lon" value="{lon}" required inputmode="decimal"></div>
-  </div>
-  <div id="locmap" style="height:280px;margin:0 0 14px;border:1px solid #d5dbe6"></div>
-  <p class="hint">Click the map or type coordinates. The marker is the selected location.
-  Price bands use UTC from longitude (15° per hour), not the political time zone.
-  <span id="utcNote"></span></p>
-  <div style="display:flex;align-items:center;gap:8px;margin:8px 0">
-    <span>Search place</span>
-    <input id="placeSearch" placeholder="Corfu, Aalborg, Cairo…" style="flex:1;max-width:400px">
-    <button type="button" id="placeGo">Find</button>
-    <span id="placeHit" class="hint"></span>
-  </div>
-  <div class="field" style="max-width:720px">
-    <label>Location remark</label>
-    <textarea name="locremark" maxlength="2000" rows="4" style="width:100%;min-height:5.5em">{locremark}</textarea>
-    <p class="hint">Up to 2000 characters. Stored in locations/.pvgis_country_cache.json. Cleared when the pin or the coordinates change.</p>
-  </div>
-  <div class="row">
-    <div class="field small"><label>Start year</label>
-      <input name="startyear" value="{startyear}"></div>
-    <div class="field small"><label>End year</label>
-      <input name="endyear" value="{endyear}"></div>
-    <div class="field small"><label>System loss %</label>
-      <input name="loss" value="{loss}"></div>
-    <div class="field"><label>Radiation database</label>
-      <select name="raddatabase">{''.join(db_opts)}</select></div>
-    <div class="field" style="justify-content:flex-end;padding-bottom:4px;">
-      <label><input type="checkbox" name="usehorizon" value="1"{hz}> terrain horizon</label>
-    </div>
-  </div>
-  <div class="row">
-    <div class="field wide"><label>Output parent folder (empty = current directory)</label>
-      <input name="outdir" value="{outdir}" placeholder="{html.escape(str(Path.cwd()))}"></div>
-  </div>
-
-  <p class="hint">
-    Up to 25 arrays. Empty rows are ignored.
-    Azimuth: 0 = south, 90 = west, −90 = east, 180 = north. Southwest = 225, opposite face = 45.
-    Wall: integer metres, empty = no extra shade. Width is 10× distance.
-    Cache suffix is <code>_s80</code> = 100 × height/distance (d5h4 and d10h8 are the same file).
-    Bifacial: fills the next row as face 2 (azimuth + 180°, junction-box / rear side).
-    Face 2 Wp = front × bifaciality % (default 80). Both yields are added; nameplate Wp is counted once.
-    Put the front (no junction box) toward the open field; face 2 toward the house.
-  </p>
-  <p class="hint">Use ↑ ↓ to change the order. Clearing a name and leaving the field clears that row.</p>
-  <table id="pvtable">
-    <thead><tr><th>#</th><th>Use</th><th>Name</th><th>Slope °</th><th>Azimuth °</th><th>Wp</th><th>Wall dist. m</th><th>Wall height m</th><th>Bifacial</th><th>Bi %</th></tr></thead>
-    <tbody>
-      {''.join(rows)}
-    </tbody>
-  </table>
-<script>
-(function () {{
-  const table = document.getElementById("pvtable");
-  if (!table) return;
-  function fields(row) {{
-    return Array.prototype.slice.call(row.querySelectorAll("input"));
-  }}
-  function swap(a, b) {{
-    const fa = fields(a), fb = fields(b);
-    fa.forEach(function (ia, k) {{
-      const ib = fb[k];
-      if (!ib) return;
-      if (ia.type === "checkbox") {{
-        const c = ia.checked; ia.checked = ib.checked; ib.checked = c;
-      }} else {{
-        const v = ia.value; ia.value = ib.value; ib.value = v;
-      }}
-    }});
-  }}
-  table.addEventListener("click", function (e) {{
-    const btn = e.target.closest("button.mv");
-    if (!btn) return;
-    const row = btn.closest("tr");
-    const dir = Number(btn.getAttribute("data-dir"));
-    const other = dir < 0 ? row.previousElementSibling : row.nextElementSibling;
-    if (!other) return;
-    swap(row, other);
-  }});
-  table.querySelectorAll("input[data-clearrow]").forEach(function (inp) {{
-    inp.addEventListener("change", function () {{
-      if (inp.value.trim() !== "") return;
-      const row = inp.closest("tr");
-      row.querySelectorAll("input").forEach(function (other) {{
-        if (other === inp) return;
-        if (other.type === "checkbox") other.checked = false;
-        else other.value = "";
-      }});
-    }});
-  }});
-}})();
-</script>
-  {demand_block}
-  <div class="actions">
-    <button type="submit">Run — download missing files and write PDF</button>
-  </div>
-</form>
-<script>
-(function () {{
-  const form = document.getElementById("pvform");
-  if (form) form.addEventListener("submit", function (ev) {{
-    const name = (document.querySelector("[name=name]").value || "").trim();
-    if (!name) {{
-      ev.preventDefault();
-      alert("Enter the location name first (country name - place name).");
-    }}
-  }});
-  window.loadRemark = async function () {{
-    const lat = document.querySelector("[name=lat]").value;
-    const lon = document.querySelector("[name=lon]").value;
-    const box = document.querySelector("[name=locremark]");
-    if (!box) return;
-    try {{
-      const r = await fetch("/api/location-remark?lat=" + encodeURIComponent(lat) + "&lon=" + encodeURIComponent(lon));
-      const data = await r.json();
-      if (data.remark) box.value = data.remark;
-    }} catch (err) {{}}
-  }};
-  function oppositeAz(az) {{
-    let a = parseFloat(String(az).replace(",", ".")) + 180;
-    if (isNaN(a)) return "";
-    while (a > 180) a -= 360;
-    while (a <= -180) a += 360;
-    return Number.isInteger(a) ? String(a) : String(Math.round(a * 1000) / 1000);
-  }}
-  function fillFace2(i) {{
-    const n = i + 1;
-    const box = document.querySelector("[name=bifacial" + i + "]");
-    if (!box || !box.checked) return;
-    const nameEl = document.querySelector("[name=pvname" + i + "]");
-    const slEl = document.querySelector("[name=slope" + i + "]");
-    const azEl = document.querySelector("[name=az" + i + "]");
-    const wpEl = document.querySelector("[name=wp" + i + "]");
-    const pctEl = document.querySelector("[name=bifaciality" + i + "]");
-    const nName = document.querySelector("[name=pvname" + n + "]");
-    const nSl = document.querySelector("[name=slope" + n + "]");
-    const nAz = document.querySelector("[name=az" + n + "]");
-    const nWp = document.querySelector("[name=wp" + n + "]");
-    const nBi = document.querySelector("[name=bifacial" + n + "]");
-    if (!nName || !slEl || !azEl || !wpEl) return;
-    let pct = parseFloat(String((pctEl && pctEl.value) || "80").replace(",", "."));
-    if (isNaN(pct) || pct <= 0) pct = 80;
-    if (pctEl && !pctEl.value) pctEl.value = "80";
-    const wp = parseFloat(String(wpEl.value).replace(",", "."));
-    const base = (nameEl.value || "").trim() || ("PV " + i);
-    nName.value = / face2$/i.test(base) ? base : base + " face2";
-    nSl.value = slEl.value;
-    nAz.value = oppositeAz(azEl.value);
-    if (!isNaN(wp)) nWp.value = String(Math.round(wp * pct / 100));
-    if (nBi) nBi.checked = false;
-  }}
-  document.querySelectorAll("input[name^='bifacial']").forEach(function (box) {{
-    box.addEventListener("change", function () {{
-      const i = parseInt(box.getAttribute("data-row"), 10);
-      if (box.checked) fillFace2(i);
-    }});
-  }});
-  document.querySelectorAll("input[name^='wp'], input[name^='bifaciality'], input[name^='az'], input[name^='slope']").forEach(function (el) {{
-    el.addEventListener("change", function () {{
-      const m = el.name.match(/(\\d+)$/);
-      if (m) fillFace2(parseInt(m[1], 10));
-    }});
-  }});
-  function outdirQ() {{
-    return encodeURIComponent(document.querySelector("[name=outdir]").value || "");
-  }}
-  async function refreshPicks() {{
-    try {{
-      const r = await fetch("/api/workspace?outdir=" + outdirQ());
-      const data = await r.json();
-      const oSel = document.getElementById("objectPick");
-      const lSel = document.getElementById("locationPick");
-      if (oSel) {{
-        const cur = document.getElementById("objectName").value;
-        oSel.innerHTML = "<option value=''>— select —</option>";
-        (data.objects || []).forEach(function (n) {{
-          const opt = document.createElement("option");
-          opt.value = n; opt.textContent = n;
-          if (n === cur) opt.selected = true;
-          oSel.appendChild(opt);
-        }});
-      }}
-      if (lSel) {{
-        lSel.innerHTML = "<option value=''>— select —</option>";
-        (data.locations || []).forEach(function (loc) {{
-          const opt = document.createElement("option");
-          opt.value = JSON.stringify(loc);
-          opt.textContent = loc.folder;
-          lSel.appendChild(opt);
-        }});
-      }}
-    }} catch (err) {{}}
-  }}
-  const oPick = document.getElementById("objectPick");
-  if (oPick) oPick.addEventListener("change", function () {{
-    if (!oPick.value) return;
-    document.getElementById("objectName").value = oPick.value;
-    window.location = "/load-object?name=" + encodeURIComponent(oPick.value) + "&outdir=" + outdirQ();
-  }});
-  const lPick = document.getElementById("locationPick");
-  if (lPick) lPick.addEventListener("change", function () {{
-    if (!lPick.value) return;
-    try {{
-      const loc = JSON.parse(lPick.value);
-      if (loc.fullname) document.querySelector("[name=name]").value = loc.fullname;
-      else if (loc.name) document.querySelector("[name=name]").value = loc.name;
-      if (loc.lat != null) document.querySelector("[name=lat]").value = loc.lat;
-      if (loc.lon != null) document.querySelector("[name=lon]").value = loc.lon;
-      if (window._moveMap) window._moveMap(loc.lat, loc.lon);
-      loadRemark();
-    }} catch (err) {{}}
-  }});
-  refreshPicks();
-  (function () {{
-    var box = document.getElementById("locmap");
-    if (!box || typeof L === "undefined") return;
-    var latEl = document.querySelector("[name=lat]");
-    var lonEl = document.querySelector("[name=lon]");
-    var lat = parseFloat(String(latEl.value).replace(",", ".")) || 48.4;
-    var lon = parseFloat(String(lonEl.value).replace(",", ".")) || 15.989;
-    var map = L.map(box).setView([lat, lon], 8);
-    L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
-      maxZoom: 18, attribution: "&copy; OpenStreetMap"
-    }}).addTo(map);
-    var marker = L.marker([lat, lon], {{draggable: true}}).addTo(map);
-    function clearPlace() {{
-      var nameEl = document.querySelector("[name=name]");
-      var remarkEl = document.querySelector("[name=locremark]");
-      if (nameEl) nameEl.value = "";
-      if (remarkEl) remarkEl.value = "";
-      setTimeout(function () {{
-        if (nameEl) nameEl.value = "";
-        if (remarkEl) remarkEl.value = "";
-      }}, 50);
-    }}
-    function setFrom(lat, lon) {{
-      latEl.value = String(Math.round(lat * 1000) / 1000);
-      lonEl.value = String(Math.round(lon * 1000) / 1000);
-      marker.setLatLng([lat, lon]);
-      clearPlace();
-      var utc = Math.round(lon / 15);
-      var note = document.getElementById("utcNote");
-      if (note) note.textContent = "  Using UTC" + (utc >= 0 ? "+" : "") + utc + " from longitude.";
-    }}
-    map.on("click", function (e) {{ setFrom(e.latlng.lat, e.latlng.lng); }});
-    marker.on("dragend", function () {{
-      var p = marker.getLatLng();
-      setFrom(p.lat, p.lng);
-    }});
-    function readFields() {{
-      var a = parseFloat(String(latEl.value).replace(",", "."));
-      var b = parseFloat(String(lonEl.value).replace(",", "."));
-      if (isNaN(a) || isNaN(b)) return;
-      marker.setLatLng([a, b]);
-      map.panTo([a, b]);
-      clearPlace();
-    }}
-    latEl.addEventListener("change", readFields);
-    lonEl.addEventListener("change", readFields);
-    var searchEl = document.getElementById("placeSearch");
-    var goBtn = document.getElementById("placeGo");
-    var hitEl = document.getElementById("placeHit");
-    async function findPlace() {{
-      var q = (searchEl.value || "").trim();
-      if (!q) return;
-      hitEl.textContent = "Searching…";
-      try {{
-        var r = await fetch("https://nominatim.openstreetmap.org/search?format=json&accept-language=en&q=" + encodeURIComponent(q));
-        var data = await r.json();
-        if (!data.length) {{ hitEl.textContent = "Not found."; return; }}
-        var hit = data[0];
-        setFrom(parseFloat(hit.lat), parseFloat(hit.lon));
-        map.setView([hit.lat, hit.lon], 10);
-        hitEl.textContent = hit.display_name;
-      }} catch (err) {{
-        hitEl.textContent = "Search failed.";
-      }}
-    }}
-    if (goBtn) goBtn.addEventListener("click", findPlace);
-    if (searchEl) searchEl.addEventListener("keydown", function (e) {{ if (e.key === "Enter") {{ e.preventDefault(); findPlace(); }} }});
-    window._moveMap = function (lat, lon) {{
-      var a = parseFloat(lat);
-      var b = parseFloat(lon);
-      if (isNaN(a) || isNaN(b)) return;
-      marker.setLatLng([a, b]);
-      map.setView([a, b], 8);
-    }};
-    latEl.addEventListener("input", clearPlace);
-    lonEl.addEventListener("input", clearPlace);
-  }})();
-  const box = document.getElementById("browser");
-  const list = document.getElementById("browserList");
-  const status = document.getElementById("browserStatus");
-  const openIndex = async function () {{
-    box.hidden = false;
-    status.textContent = "Reading folders…";
-    list.innerHTML = "";
-    const outdir = encodeURIComponent(document.querySelector("[name=outdir]").value || "");
-    try {{
-      const r = await fetch("/api/folders?outdir=" + outdir);
-      const data = await r.json();
-      if (data.error) {{ status.textContent = data.error; return; }}
-      status.textContent = "Parent: " + data.parent + "  —  click a PDF to load its parameters into the form.";
-      if (!data.folders.length) {{
-        list.innerHTML = "<p class='hint'>No location folders with files found.</p>";
-        return;
-      }}
-      data.folders.forEach(function (f) {{
-        const div = document.createElement("div");
-        div.className = "folder";
-        const title = document.createElement("div");
-        title.className = "fname";
-        title.textContent = f.name;
-        div.appendChild(title);
-        const ul = document.createElement("ul");
-        (f.files || []).forEach(function (file) {{
-          const li = document.createElement("li");
-          if (file.load) {{
-            const a = document.createElement("a");
-            a.className = "pdf";
-            a.href = file.load;
-            a.textContent = file.name;
-            li.appendChild(a);
-            li.appendChild(document.createTextNode("  load parameters"));
-          }} else {{
-            const span = document.createElement("span");
-            span.className = "other";
-            span.textContent = file.name;
-            li.appendChild(span);
-          }}
-          ul.appendChild(li);
-        }});
-        div.appendChild(ul);
-        list.appendChild(div);
-      }});
-    }} catch (err) {{
-      status.textContent = String(err);
-    }}
-  }};
-  document.querySelectorAll(".browseBtn").forEach(function (b) {{
-    b.addEventListener("click", openIndex);
-  }});
-  async function fillCmp(sel, obj) {{
-    sel.innerHTML = "<option value=''>— file —</option>";
-    const note = document.getElementById("cmpStatus");
-    if (!obj) {{ if (note) note.textContent = ""; return; }}
-    try {{
-      const r = await fetch("/api/object-files?outdir=" + outdirQ() + "&object=" + encodeURIComponent(obj));
-      const data = await r.json();
-      if (data.error) {{ if (note) note.textContent = data.error; return; }}
-      (data.files || []).forEach(function (f) {{
-        const opt = document.createElement("option");
-        opt.value = f.path;
-        opt.textContent = f.name;
-        sel.appendChild(opt);
-      }});
-      if (note) note.textContent = (data.files || []).length
-        ? ""
-        : "No PDF/JSON pair in objects/" + obj + ". Run a simulation first.";
-    }} catch (err) {{
-      if (note) note.textContent = "Could not list simulations: " + err;
-    }}
-  }}
-  function fillObjects(ids) {{
-    fetch("/api/workspace?outdir=" + outdirQ()).then(function (r) {{ return r.json(); }}).then(function (data) {{
-      ids.forEach(function (id) {{
-        const sel = document.getElementById(id);
-        if (!sel) return;
-        const cur = sel.value;
-        sel.innerHTML = "<option value=''>— object —</option>";
-        (data.objects || []).forEach(function (n) {{
-          const opt = document.createElement("option");
-          opt.value = n; opt.textContent = n;
-          if (n === cur) opt.selected = true;
-          sel.appendChild(opt);
-        }});
-      }});
-    }}).catch(function () {{}});
-  }}
-  fillObjects(["cmpObj1", "cmpObj2"]);
-  const c1 = document.getElementById("cmpObj1");
-  const c2 = document.getElementById("cmpObj2");
-  if (c1) c1.addEventListener("change", function () {{ fillCmp(document.getElementById("cmpFile1"), c1.value); }});
-  if (c2) c2.addEventListener("change", function () {{ fillCmp(document.getElementById("cmpFile2"), c2.value); }});
-  if (c1 && c1.value) fillCmp(document.getElementById("cmpFile1"), c1.value);
-  if (c2 && c2.value) fillCmp(document.getElementById("cmpFile2"), c2.value);
-  const cmpBtn = document.getElementById("cmpBtn");
-  if (cmpBtn) cmpBtn.addEventListener("click", function () {{
-    const a = document.getElementById("cmpFile1").value;
-    const b = document.getElementById("cmpFile2").value;
-    if (!a || !b) {{ alert("Select two simulation files."); return; }}
-    window.location = "/compare?a=" + encodeURIComponent(a) + "&b=" + encodeURIComponent(b) + "&outdir=" + outdirQ();
-  }});
-}})();
-</script>
-"""
-    return page_shell("PEGE energy sim", body)
-
-
-def first(fields: dict[str, list[str]], key: str, default: str = "") -> str:
-    vals = fields.get(key)
-    return vals[0].strip() if vals else default
-
-
-def parse_job(fields: dict[str, list[str]]) -> dict:
-    name = first(fields, "name")
-    if not name:
-        raise ValueError("Enter the location name first (country name - place name).")
-    try:
-        lat = float(first(fields, "lat").replace(",", "."))
-        lon = float(first(fields, "lon").replace(",", "."))
-    except ValueError as exc:
-        raise ValueError("Latitude and longitude must be numbers") from exc
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        raise ValueError("Latitude must be −90…90 and longitude −180…180")
-
-    pv = []
-    for i in range(1, N_ROWS + 1):
-        sl = first(fields, f"slope{i}")
-        az = first(fields, f"az{i}")
-        wp = first(fields, f"wp{i}")
-        label = first(fields, f"pvname{i}")
-        if not sl and not az and not wp and not label:
-            continue
-        if not sl or not az or not wp:
-            raise ValueError(
-                f"{label or f'PV {i}'}: fill slope, azimuth and Wp, or leave the whole row empty"
-            )
-        try:
-            slope = float(sl.replace(",", "."))
-            azimuth = float(az.replace(",", "."))
-            watts = float(wp.replace(",", "."))
-        except ValueError as exc:
-            raise ValueError(f"{label or f'PV {i}'}: slope, azimuth and Wp must be numbers") from exc
-        if watts <= 0:
-            raise ValueError(f"{label or f'PV {i}'}: Wp must be positive")
-        dist_s = first(fields, f"dist{i}")
-        height_s = first(fields, f"height{i}")
-        wall_d = wall_h = None
-        if dist_s or height_s:
-            if not dist_s or not height_s:
-                raise ValueError(f"{label or f'PV {i}'}: fill both wall distance and height, or leave both empty")
-            try:
-                wall_d = int(float(dist_s.replace(",", ".")))
-                wall_h = int(float(height_s.replace(",", ".")))
-            except ValueError as exc:
-                raise ValueError(f"{label or f'PV {i}'}: wall distance and height must be integers") from exc
-            if wall_d != float(dist_s.replace(",", ".")) or wall_h != float(height_s.replace(",", ".")):
-                raise ValueError(f"{label or f'PV {i}'}: wall parameters are integers only")
-            if wall_d <= 0 or wall_h < 0:
-                raise ValueError(f"{label or f'PV {i}'}: wall distance > 0 and height ≥ 0")
-        bifacial = first(fields, f"bifacial{i}").lower() in {"1", "on", "yes", "true"}
-        bipct_s = first(fields, f"bifaciality{i}")
-        bifaciality = None
-        if bipct_s:
-            try:
-                bifaciality = float(bipct_s.replace(",", "."))
-            except ValueError as exc:
-                raise ValueError(f"{label or f'PV {i}'}: bifaciality % must be a number") from exc
-            if bifaciality > 1.5:
-                bifaciality = bifaciality / 100.0
-            if not (0.05 <= bifaciality <= 1.0):
-                raise ValueError(f"{label or f'PV {i}'}: bifaciality must be 5–100 %")
-        elif bifacial:
-            bifaciality = 0.80
-        enabled = first(fields, f"use{i}").lower() in {"1", "on", "yes", "true"}
-        pv.append((label or f"PV {i}", slope, azimuth, watts, wall_d, wall_h, bifacial, bifaciality, enabled))
-    if not pv:
-        log_note = "No PV arrays. Apartment or grid-only run."
-
-    startyear = int(first(fields, "startyear", str(CONFIG["startyear"])) or CONFIG["startyear"])
-    endyear = int(first(fields, "endyear", str(CONFIG["endyear"])) or CONFIG["endyear"])
-    if startyear > endyear:
-        raise ValueError("Start year must be ≤ end year")
-    loss = float(first(fields, "loss", str(CONFIG["loss"])) or CONFIG["loss"])
-    raddatabase = first(fields, "raddatabase", "auto") or "auto"
-    usehorizon = first(fields, "usehorizon", "") in {"1", "on", "yes"}
-    export0915 = False
-    outdir_s = first(fields, "outdir")
-    outdir = Path(outdir_s).expanduser() if outdir_s else Path.cwd()
-    outdir.mkdir(parents=True, exist_ok=True)
-    object_name = sanitize_name(first(fields, "object") or "GEMINI-60-house-with-garage")
-    demand = parse_demand_fields(fields)
-    demand["export_0915"] = export0915
-    pv = [item for item in pv if item[-1]]
-    return {
-        "name": name,
-        "simname": first(fields, "simname"),
-        "lat": lat,
-        "lon": lon,
-        "object": object_name,
-        "pv": pv,
-        "startyear": startyear,
-        "endyear": endyear,
-        "loss": loss,
-        "raddatabase": raddatabase,
-        "usehorizon": usehorizon,
-        "export0915": export0915,
-        "outdir": outdir,
-        "demand": demand,
-    }
-
-
-def job_to_form_values(job: dict) -> dict[str, str]:
-    vals = {
-        "name": str(job["name"]),
-        "simname": str(job.get("simname") or ""),
-        "lat": str(job["lat"]),
-        "lon": str(job["lon"]),
-        "startyear": str(job["startyear"]),
-        "endyear": str(job["endyear"]),
-        "loss": str(job["loss"]),
-        "raddatabase": str(job["raddatabase"]),
-        "usehorizon": "1" if job["usehorizon"] else "0",
-        "export0915": "1" if job.get("export0915") else "0",
-        "outdir": str(job["outdir"]),
-        "object": str(job.get("object") or ""),
-    }
-    for i, item in enumerate(job["pv"], 1):
-        bifacial = False
-        bifaciality = None
-        enabled = True
-        if len(item) >= 9:
-            label, sl, az, wp, dist, height, bifacial, bifaciality, enabled = item[:9]
-        elif len(item) == 8:
-            label, sl, az, wp, dist, height, bifacial, bifaciality = item
-        elif len(item) == 7:
-            label, sl, az, wp, dist, height, bifacial = item
-        elif len(item) == 6:
-            label, sl, az, wp, dist, height = item
-        elif len(item) == 4:
-            label, sl, az, wp = item
-            dist = height = None
-        else:
-            sl, az, wp = item[:3]
-            label, dist, height = f"PV {i}", None, None
-        vals[f"pvname{i}"] = str(label)
-        vals[f"slope{i}"] = str(sl)
-        vals[f"az{i}"] = str(az)
-        vals[f"wp{i}"] = str(wp)
-        vals[f"dist{i}"] = "" if dist is None else str(int(dist))
-        vals[f"height{i}"] = "" if height is None else str(int(height))
-        vals[f"bifacial{i}"] = "1" if bifacial else "0"
-        vals[f"use{i}"] = "1" if enabled else "0"
-        if bifaciality is not None:
-            pct = bifaciality * 100 if float(bifaciality) <= 1.5 else float(bifaciality)
-            vals[f"bifaciality{i}"] = str(int(pct) if abs(pct - round(pct)) < 1e-9 else pct)
-    vals.update(demand_to_form_values(job.get("demand") or {}))
-    return vals
-
-
-def form_query(job: dict) -> str:
-    return urlencode(job_to_form_values(job), doseq=False)
-
-
-def form_values_from_qs(qs: dict[str, list[str]]) -> dict[str, str]:
-    return {k: (v[0] if v else "") for k, v in qs.items()}
-
-
-def allowed_roots(extra: Path | None = None) -> list[Path]:
-    roots = [Path.cwd().resolve()]
-    if LAST_FORM.get("outdir"):
-        try:
-            roots.append(Path(LAST_FORM["outdir"]).expanduser().resolve())
-        except Exception:
-            pass
-    if extra:
-        try:
-            roots.append(extra.expanduser().resolve())
-        except Exception:
-            pass
-    out = []
-    seen = set()
-    for r in roots:
-        if r not in seen:
-            seen.add(r)
-            out.append(r)
-    return out
-
-
-def is_allowed_path(path: Path, extra: Path | None = None) -> bool:
-    try:
-        path = path.resolve()
-    except Exception:
-        return False
-    for root in allowed_roots(extra):
-        if path == root or root in path.parents:
-            return True
-    return False
-
-
-def parse_location_folder_name(folder_name: str) -> dict | None:
-    parts = [p.strip() for p in folder_name.split(" - ")]
-    if len(parts) < 3:
-        return None
-    try:
-        lat = float(parts[-2].replace(",", "."))
-        lon = float(parts[-1].replace(",", "."))
-    except ValueError:
-        return None
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return None
-    full = " - ".join(parts[:-2]) if len(parts) >= 4 else parts[0]
-    if len(parts) >= 4:
-        name = " - ".join(parts[1:-2])
-    else:
-        name = parts[0]
-    return {"folder": folder_name, "name": name, "fullname": full, "lat": lat, "lon": lon}
-
-
-def list_location_folders(parent: Path) -> list[dict]:
-    parent = parent.expanduser().resolve()
-    folders = []
-    candidates = []
-    if parent.is_dir():
-        candidates.append(parent)
-        extra = [parent]
-        loc = parent / "locations"
-        if loc.is_dir():
-            extra.append(loc)
-        for root in extra:
-            for child in sorted(root.iterdir()):
-                if child.is_dir() and child.name.lower() not in {"objects", "compares", "locations"}:
-                    candidates.append(child)
-    for folder in candidates:
-        files = []
-        try:
-            entries = sorted(folder.iterdir(), key=lambda p: p.name.lower())
-        except OSError:
-            continue
-        for p in entries:
-            if not p.is_file():
-                continue
-            rec = {"name": p.name}
-            if p.suffix.lower() in {".pdf", ".json"}:
-                rec["load"] = "/load-pdf?path=" + quote(str(p))
-            files.append(rec)
-        if folder.name.lower() in {"objects", "compares", "locations"}:
-            continue
-        if files and folder != parent:
-            folders.append({"name": folder.name, "files": files})
-        elif files and folder == parent:
-            folders.insert(0, {"name": folder.name + "  (parent)", "files": files})
-    return folders
-
-
-def sidecar_to_form_values(data: dict) -> dict[str, str] | None:
-    if data.get("form_values"):
-        return {str(k): "" if v is None else str(v) for k, v in data["form_values"].items()}
-    if data.get("arrays") and data.get("name"):
-        job = {
-            "name": data["name"],
-            "lat": data.get("lat", ""),
-            "lon": data.get("lon", ""),
-            "startyear": data.get("startyear", CONFIG["startyear"]),
-            "endyear": data.get("endyear", CONFIG["endyear"]),
-            "loss": data.get("loss", CONFIG["loss"]),
-            "raddatabase": data.get("raddatabase", "auto"),
-            "usehorizon": data.get("usehorizon", True),
-            "outdir": data.get("outdir", ""),
-            "pv": [],
-        }
-        for a in data["arrays"]:
-            job["pv"].append((
-                a.get("label", ""),
-                a.get("slope"),
-                a.get("azimuth"),
-                a.get("wp"),
-                a.get("wall_d"),
-                a.get("wall_h"),
-            ))
-        if job["outdir"] == "":
-            job["outdir"] = Path.cwd()
-        return job_to_form_values(job)
-    return None
-
-
-def query_from_reopen_url(url: str) -> dict[str, str] | None:
-    if not url or "/form?" not in url:
-        return None
-    q = url.split("/form?", 1)[1].strip()
-    q = q.split()[0].rstrip(".,;)")
-    return form_values_from_qs(parse_qs(q, keep_blank_values=True))
-
-
-def _vals_from_json_file(path: Path) -> dict[str, str] | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
     except Exception:
         return None
-    vals = sidecar_to_form_values(data)
-    if vals:
-        return vals
-    if data.get("reopen_url"):
-        return query_from_reopen_url(str(data["reopen_url"]))
-    return None
-
-
-def _vals_from_pdf_bytes(pdf_path: Path) -> dict[str, str] | None:
-    raw = pdf_path.read_bytes()
-    # URLs are often stored as literal ASCII in the PDF stream / annotations.
-    text = raw.decode("latin-1", errors="ignore")
-    for pattern in (
-        r"https?://[^\s<>()\\]+/form\?[^\s<>()\\]+",
-        r"/form\?[A-Za-z0-9_%.=&+\-]+",
-    ):
-        for blob in re.findall(pattern, text):
-            blob = blob.replace("\\", "")
-            if "/form?" not in blob:
-                continue
-            vals = query_from_reopen_url("http://local" + blob[blob.index("/form?"):])
-            if vals and ("name" in vals or "lat" in vals):
-                return vals
-    return None
-
-
-def extract_form_from_pdf(pdf_path: Path) -> dict[str, str]:
-    if pdf_path.suffix.lower() == ".json":
-        vals = _vals_from_json_file(pdf_path)
-        if vals:
-            return vals
-        raise ValueError("That JSON file has no form parameters.")
-
-    sidecar = pdf_path.with_suffix(".json")
-    if sidecar.is_file():
-        vals = _vals_from_json_file(sidecar)
-        if vals:
-            return vals
-
-    vals = _vals_from_pdf_bytes(pdf_path)
-    if vals:
-        return vals
-
-    try:
-        from pypdf import PdfReader  # optional
-    except ImportError:
-        PdfReader = None
-    if PdfReader is not None:
+    best = None
+    best_num = -1.0
+    for line in text.splitlines():
+        s = line.strip()
+        # ## YYYY-MM-DD Version VERSIONNUMBER
+        # "##", two "-", and "Version" qualify the line
+        if not s.startswith("##"):
+            continue
+        if s.count("-") < 2 or "Version" not in s:
+            continue
+        # extract the number after Version
+        parts = s.split("Version", 1)
+        if len(parts) < 2:
+            continue
+        num_s = parts[1].strip().split()[0] if parts[1].strip() else ""
         try:
-            reader = PdfReader(str(pdf_path))
-            meta = reader.metadata
-            for attr in ("subject", "keywords"):
-                val = getattr(meta, attr, None) if meta else None
-                if isinstance(val, str):
-                    found = query_from_reopen_url(val)
-                    if found:
-                        return found
-            text = ""
-            for page in reader.pages[:2]:
-                text += page.extract_text() or ""
-            match = re.search(r"/form\?[^\s]+", text)
-            if match:
-                found = query_from_reopen_url("http://local" + match.group(0)[match.group(0).index("/form?"):])
-                if found:
-                    return found
-        except Exception:
-            pass
+            num = float(num_s)
+        except ValueError:
+            continue
+        if num > best_num:
+            best_num = num
+            best = num_s
+    return best
 
-    raise ValueError(
-        "No parameters in this PDF. Use a report from the current program "
-        "(it writes a matching .json next to the PDF), or click that .json file."
-    )
-
-
-
-LOGO_URL = "https://pege.org/pic/pege-trans.png"
-FAVICON_URL = "https://www.pege.org/favicon.ico"
 
 
 def _fetch_bytes(url: str, timeout: float = 8.0) -> bytes:
@@ -1610,9 +701,11 @@ def load_logo() -> tuple[bytes, str]:
 
 def load_favicon() -> bytes:
     cache = HERE / "favicon.ico"
+    if cache.is_file() and cache.stat().st_size > 32:
+        return cache.read_bytes()
     try:
         data = _fetch_bytes(FAVICON_URL)
-        if data and (data[:4] == b"\x00\x00\x01\x00" or data[:8] == b"\x89PNG\r\n\x1a\n" or len(data) > 32):
+        if data and len(data) > 32:
             cache.write_bytes(data)
             return data
     except Exception:
@@ -1630,6 +723,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        # Store field update from query string if present
+        qs = parse_qs(parsed.query)
+        if qs.get("field") and qs.get("page"):
+            page = qs["page"][0]
+            field = qs["field"][0]
+            value = (qs.get("value") or [""])[0]
+            project = (qs.get("project") or [PF_STORE.get("project") or ""])[0]
+            if project:
+                PF_STORE["project"] = project
+            if field:
+                if page == "baseline":
+                    PF_STORE.setdefault("variants", {}).setdefault("BASELINE", {})[field] = value
+                elif page in "abcde":
+                    PF_STORE.setdefault("variants", {}).setdefault(page.upper(), {})[field] = value
+                else:
+                    PF_STORE.setdefault("data", {})[field] = value
         if parsed.path in ("/pege-logo.png", "/favicon.png"):
             data, ctype = load_logo()
             if not data:
@@ -1655,8 +764,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        if parsed.path in ("/objects", "/community", "/compare-communities", "/investment"):
-            self._send(200, page_shell("Soon", "<p>Will be implemented soon.</p><p><a href='/form'>Back to main</a></p>"))
+        if parsed.path == "/objects":
+            self._send(200, page_shell("Other objects", OBJECTS_HTML))
+            return
+        if parsed.path == "/community":
+            self._send(200, page_shell("Community", COMMUNITY_HTML))
+            return
+        if parsed.path == "/compare-communities":
+            self._send(200, page_shell("Compare communities", COMPARE_COMMUNITIES_HTML))
             return
         if parsed.path == "/files":
             self._send(200, page_shell("Files", FILES_HTML))
@@ -1671,21 +786,30 @@ class Handler(BaseHTTPRequestHandler):
                 for name in names:
                     pdf = pdfs.get(name)
                     js = jsons.get(name)
+                    if js and not js.is_file():
+                        js = None
                     definition = name == folder.name and not pdf
-                    if not definition and not (pdf and js):
-                        continue
-                    version = "0.0"
+                    version = "0.2"
+                    lang = "english"
                     if js and js.is_file():
                         try:
-                            meta = json.loads(js.read_text(encoding="utf-8"))
-                            version = str(meta.get("software_version") or "0.0")
+                            # Read only the first 2 KB; version and language are near the top
+                            head = js.read_text(encoding="utf-8")[:2048]
+                            import re as _re
+                            m = _re.search(r'"software_version"\s*:\s*"([^"]*)"', head)
+                            if m:
+                                version = m.group(1) or "0.0"
+                            m = _re.search(r'"pdf_language"\s*:\s*"([^"]*)"', head)
+                            if m:
+                                lang = m.group(1) or "english"
                         except Exception:
                             pass
                     out.append({
                         "name": name + ("  (object)" if definition else ""),
-                        "href": "" if definition else "/file?path=" + quote(str(pdf or js)),
+                        "href": "/file?path=" + quote(str(pdf)) if pdf else "",
                         "edit": "/load?json=" + quote(str(js)) if js else "",
                         "version": version,
+                        "pdf_language": lang,
                         "json": str(js) if js else "",
                     })
                 return out
@@ -1710,9 +834,19 @@ class Handler(BaseHTTPRequestHandler):
                         for p in sorted(folder.iterdir()) if p.is_file()
                     ]})
             investment = []
-            idir = root / "investment-models"
+            idir = root / "project-finance"
             if idir.is_dir():
-                investment.append({"name": "investment-models", "files": pairs(idir)})
+                for folder in sorted(p for p in idir.iterdir() if p.is_dir()):
+                    files = []
+                    for f in sorted(folder.glob("*.json")):
+                        pdf = f.with_suffix(".pdf")
+                        files.append({
+                            "name": f.stem,
+                            "href": "/file?path=" + quote(str(pdf)) if pdf.is_file() else "",
+                            "edit": "/project-finance?json=" + quote(str(f)),
+                            "json": str(f),
+                        })
+                    investment.append({"name": folder.name, "files": files})
             known = {odir.resolve(), cdir.resolve(), ldir.resolve(), idir.resolve()}
             other = []
             if root.is_dir():
@@ -1748,40 +882,303 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        if parsed.path == "/investment/baseline":
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            raw = self.rfile.read(length).decode("utf-8", errors="replace")
-            fields = parse_qs(raw, keep_blank_values=True)
-            base = {str(k): v[0] if isinstance(v, list) else str(v) for k, v in fields.items()}
-            folder = data_root() / "investment-models"
-            folder.mkdir(parents=True, exist_ok=True)
-            # Prefer the newest project JSON that is not named baseline
-            candidates = [p for p in folder.glob("*.json") if p.name != "baseline.json"]
-            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            if candidates:
-                path = candidates[0]
-                existing = {}
+        if parsed.path == "/project-finance":
+            pf_ensure_loaded()
+            qs = parse_qs(parsed.query)
+            if not qs and not parsed.query and PF_STORE.get("last_page") and PF_STORE["last_page"] != "general":
+                self.send_response(302)
+                self.send_header("Location", "/project-finance/" + PF_STORE["last_page"])
+                self.end_headers()
+                return
+            # handle project or sim selection from dropdown
+            if qs.get("project"):
+                PF_STORE["project"] = qs["project"][0]
+                PF_STORE["data"] = pf_load(qs["project"][0])
+            if qs.get("sim"):
+                PF_STORE["selected_sim"] = qs["sim"][0]
+                data = pf_load(PF_STORE.get("project") or "", qs["sim"][0])
+                if data:
+                    PF_STORE["data"] = data
+            if qs.get("field") and qs.get("page"):
+                page = qs["page"][0]
+                field = qs["field"][0]
+                value = (qs.get("value") or [""])[0]
+                if page == "baseline":
+                    PF_STORE.setdefault("variants", {}).setdefault("BASELINE", {})[field] = value
+                elif page in "abcde":
+                    PF_STORE.setdefault("variants", {}).setdefault(page.upper(), {})[field] = value
+                else:
+                    PF_STORE.setdefault("data", {})[field] = value
+            # ensure model_name and sim_name are in data
+            if PF_STORE.get("project") and "model_name" not in (PF_STORE.get("data") or {}):
+                PF_STORE.setdefault("data", {})["model_name"] = PF_STORE["project"]
+            sel = PF_STORE.get("selected_sim") or ""
+            if sel and "sim_name" not in (PF_STORE.get("data") or {}):
+                import re
+                m = re.match(r"\d{4}-\d{2}-\d{2} \d{4} (.+)", sel)
+                PF_STORE.setdefault("data", {})["sim_name"] = m.group(1) if m else sel
+            PF_STORE["last_page"] = "general"
+            page = pf_fill_html(INVEST_HTML)
+            sel = PF_STORE.get("selected_sim") or ""
+            page += "<script>window.PF_SELECTED_SIM = " + json.dumps(sel) + ";</script>"
+            self._send(200, page_shell("Project finance", page))
+            return
+        if parsed.path == "/project-finance/baseline":
+            PF_STORE["last_page"] = "baseline"
+            pf_ensure_loaded()
+            qs = parse_qs(parsed.query)
+            if qs.get("field"):
+                page = (qs.get("page") or ["baseline"])[0]
+                field = qs["field"][0]
+                value = (qs.get("value") or [""])[0]
+                if page == "baseline":
+                    PF_STORE.setdefault("variants", {}).setdefault("BASELINE", {})[field] = value
+                elif page in "abcde":
+                    PF_STORE.setdefault("variants", {}).setdefault(page.upper(), {})[field] = value
+                else:
+                    PF_STORE.setdefault("data", {})[field] = value
+            base = (PF_STORE.get("variants") or {}).get("BASELINE") or {}
+            page = pf_fill_html(BASELINE_HTML, base)
+            page = pf_complete_selects(page, base)
+            stored = {k: v for k, v in base.items() if k.startswith("obj_") or k.startswith("sim_")}
+            page += "<script>window.PF_STORED = " + json.dumps(stored) + ";</script>"
+            self._send(200, page_shell("Project finance", page))
+            return
+        if parsed.path.startswith("/project-finance/") and parsed.path.split("/")[-1] in list("abcde"):
+            PF_STORE["last_page"] = parsed.path.split("/")[-1]
+            letter = parsed.path[-1].upper()
+            pf_ensure_loaded()
+            qs = parse_qs(parsed.query)
+            if qs:
+                src_letter = (qs.get("letter") or [letter])[0].upper()
+                if src_letter in "ABCDE" or src_letter == "BASELINE":
+                    store = PF_STORE.setdefault("variants", {}).setdefault(src_letter, {})
+                else:
+                    store = PF_STORE.setdefault("data", {})
+                for k, v in qs.items():
+                    if k not in ("project", "sim", "letter"):
+                        store[k] = v[0] if isinstance(v, list) else v
+            variant_data = (PF_STORE.get("variants") or {}).get(letter) or {}
+            raw = VARIANT_HTML.replace("{letter}", letter).replace("{letter_lower}", letter.lower()).replace("{{", "{").replace("}}", "}")
+            page = pf_fill_html(raw, variant_data)
+            page = pf_complete_selects(page, variant_data)
+            stored = {k: v for k, v in variant_data.items() if k.startswith("obj_") or k.startswith("sim_")}
+            page += "<script>window.PF_STORED = " + json.dumps(stored) + ";</script>"
+            self._send(200, page_shell("Project finance", page))
+            return
+        if parsed.path == "/api/pf-simulate":
+            from pege_energy_sim_project_finance import pf_simulate
+            qs = parse_qs(parsed.query)
+            variant = (qs.get("v") or ["baseline"])[0]
+            stress = (qs.get("s") or ["normal"])[0]
+            result = pf_simulate(variant, stress)
+            self._send_json(200, result)
+            return
+        if parsed.path == "/project-finance/pdf":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            def emit(chunk):
+                self.wfile.write(chunk.encode("utf-8"))
                 try:
-                    existing = json.loads(path.read_text(encoding="utf-8"))
-                except Exception:
-                    existing = {}
+                    self.wfile.flush()
+                except BrokenPipeError:
+                    pass
+            head = page_shell("PDF creation", "<h3>Creating PDF</h3><div class='log' id='log' style='background:#0f1a2b;color:#d6e2f0;padding:12px 14px;max-height:70vh;overflow:auto;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap'>LOG_STREAM").decode("utf-8")
+            emit(head.split("LOG_STREAM", 1)[0])
+            def log(msg):
+                emit(html.escape(msg) + "<br><script>(function(){var b=document.getElementById('log');if(b)b.scrollTop=b.scrollHeight;})();</script>")
+            try:
+                from pege_energy_sim_project_finance import pf_build_pdf
+                path = pf_build_pdf(progress=log)
+            except Exception:
+                import traceback
+                log(traceback.format_exc())
+                path = None
+            if path:
+                PF_STORE["last_pdf"] = path
+                import shutil
+                if shutil.which("7z"):
+                    log("Creating 7z…")
+                    try:
+                        from pege_energy_sim_project_finance import pf_build_7z
+                        seven = pf_build_7z()
+                        if seven:
+                            log(f"7z: {Path(seven).name}")
+                            PF_STORE["last_7z"] = seven
+                    except Exception as exc:
+                        log(f"7z failed: {exc}")
+                else:
+                    log("7z is not available. Creating ZIP instead.")
+            emit("</div>")
+            if path:
+                emit("<p style='margin-top:12px'><a href='/project-finance/pdf-view' target='_blank' style='padding:8px 16px;background:#003399;color:#fff;text-decoration:none;border-radius:4px'>View PDF</a> ")
+                emit("<a href='/project-finance/email' style='padding:8px 16px;background:#1565c0;color:#fff;text-decoration:none;border-radius:4px'>Email 7z</a> ")
+                emit("<a href='/project-finance/zip' style='padding:8px 16px;background:#2e7d32;color:#fff;text-decoration:none;border-radius:4px'>Create ZIP</a></p>")
+            emit("</main></body></html>")
+            return
+        if parsed.path == "/project-finance/pdf-status":
+            from pege_energy_sim_project_finance import PDF_PROGRESS
+            done = any(x == "Done" for x in PDF_PROGRESS)
+            buttons = ""
+            if done:
+                buttons = '<a href="/project-finance/pdf-view" target="_blank" style="padding:8px 16px;background:#003399;color:#fff;text-decoration:none;border-radius:4px">View PDF</a> &nbsp; <a href="/project-finance/zip" style="padding:8px 16px;background:#2e7d32;color:#fff;text-decoration:none;border-radius:4px">Create ZIP</a> &nbsp; <a href="/project-finance/7z" style="padding:8px 16px;background:#1565c0;color:#fff;text-decoration:none;border-radius:4px">Create 7z</a>'
+            self._send_json(200, {"lines": list(PDF_PROGRESS), "done": done, "buttons": buttons})
+            return
+        if parsed.path == "/project-finance/pdf-view":
+            from pege_energy_sim_project_finance import pf_folder
+            path = Path(PF_STORE.get("last_pdf") or "")
+            if not path.is_file():
+                project = PF_STORE.get("project") or ""
+                selected = PF_STORE.get("selected_sim") or ""
+                if project and selected:
+                    path = pf_folder(project) / f"{selected}.pdf"
+            if path.is_file():
+                    data = path.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/pdf")
+                    self.send_header("Content-Disposition", f'inline; filename="{path.name}"')
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+            self._send(404, page_shell("PDF", "<p>Not found.</p>"))
+            return
+        if parsed.path == "/project-finance/pdf-run":
+            from pege_energy_sim_project_finance import pf_build_pdf
+            log_lines = []
+            def prog(msg):
+                log_lines.append(msg)
+                print(f"PDF: {msg}", flush=True)
+            try:
+                path = pf_build_pdf(progress=prog)
+            except Exception:
+                import traceback
+                tb = traceback.format_exc()
+                print(tb, flush=True)
+                body = f"<h3>PDF creation failed</h3><pre>{html.escape(tb)}</pre><p><a href='/project-finance'>Back</a></p>"
+                self._send(500, page_shell("PDF error", body))
+                return
+            if not path:
+                self._send(400, page_shell("PDF", "<p>No project selected.</p>"))
+                return
+            log_html = "<br>".join(html.escape(x) for x in log_lines)
+            body = f"""<h3>PDF created</h3>
+<p>{log_html}</p>
+<p><a href="/file?path={quote(str(path))}" target="_blank" style="padding:8px 16px;background:#003399;color:#fff;text-decoration:none;border-radius:4px">View PDF</a>
+&nbsp;
+<a href="/project-finance/zip" style="padding:8px 16px;background:#2e7d32;color:#fff;text-decoration:none;border-radius:4px">Create ZIP</a>
+&nbsp;
+<a href="/project-finance/7z" style="padding:8px 16px;background:#1565c0;color:#fff;text-decoration:none;border-radius:4px">Create 7z</a></p>
+<p><a href="/project-finance">Back to project finance</a></p>"""
+            self._send(200, page_shell("PDF creation", body))
+            return
+        if parsed.path == "/project-finance/zip":
+            from pege_energy_sim_project_finance import pf_build_zip
+            path = pf_build_zip()
+            if not path:
+                self._send(400, page_shell("ZIP", "<p>No project selected.</p>"))
+                return
+            data = Path(path).read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{Path(path).name}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if parsed.path == "/project-finance/email":
+            import subprocess, shutil
+            seven = PF_STORE.get("last_7z") or ""
+            if not seven or not Path(seven).is_file():
+                self._send(400, page_shell("Email", "<p>No 7z file. Create the PDF first.</p>"))
+                return
+            if shutil.which("xdg-email"):
+                subprocess.Popen(["xdg-email", "--attach", seven, "mailto:?subject=Project finance"])
+                self._send(200, page_shell("Email", "<p>Opening the email program with the 7z attached.</p><p><a href='/project-finance'>Back</a></p>"))
             else:
-                stamp = datetime.now().strftime("%Y-%m-%d %H%M")
-                path = folder / f"{stamp} investment.json"
-                existing = {}
-            existing.update(base)
-            path.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-            path.touch()
-            self._send(200, page_shell("Investment model", BASELINE_HTML + f"<p>Saved into {path}<br>money={existing.get('base_money','')}</p>"))
+                self._send(200, page_shell("Email", f"<p>xdg-email is not available. The 7z is at:<br>{html.escape(seven)}</p>"))
             return
-        if parsed.path == "/investment":
-            self._send(200, page_shell("Investment model", INVEST_HTML))
+        if parsed.path == "/project-finance/7z":
+            from pege_energy_sim_project_finance import pf_folder
+            import subprocess, shutil, tempfile, os
+            pf_ensure_loaded()
+            project = PF_STORE.get("project") or ""
+            if not project:
+                self._send(400, page_shell("7z", "<p>No project selected.</p>"))
+                return
+            selected = PF_STORE.get("selected_sim") or ""
+            if not selected:
+                last = Path(PF_STORE.get("last_pdf") or "")
+                selected = last.stem if last.stem else ""
+            folder = pf_folder(project)
+            variants = PF_STORE.get("variants") or {}
+            # Collect files to include
+            files = []
+            for ext in (".json", ".pdf"):
+                f = folder / f"{selected}{ext}"
+                if f.is_file():
+                    files.append((f, f"project-finance/{project}/{f.name}"))
+            for key in ["BASELINE", "A", "B", "C", "D", "E"]:
+                v = variants.get(key) or {}
+                for sfx in ("n", "e", "p"):
+                    on = str(v.get(f"obj_{sfx}") or "").strip()
+                    sn = str(v.get(f"sim_{sfx}") or "").strip()
+                    if not on or not sn:
+                        continue
+                    obj_folder = data_root() / "objects" / on
+                    if not obj_folder.is_dir():
+                        continue
+                    for ext in (".json", ".pdf"):
+                        for f in obj_folder.glob(f"*{sn}*{ext}"):
+                            files.append((f, f"objects/{on}/{f.name}"))
+            if not files:
+                self._send(400, page_shell("7z", "<p>No files.</p>"))
+                return
+            out_name = f"{selected}.7z" if selected else "export.7z"
+            if shutil.which("7z"):
+                with tempfile.TemporaryDirectory() as td:
+                    for src, arc in files:
+                        dest = Path(td) / arc
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(src.read_bytes())
+                    out = Path(td) / out_name
+                    subprocess.run(["7z", "a", "-t7z", str(out), "."], cwd=td, check=False, capture_output=True)
+                    data = out.read_bytes() if out.is_file() else b""
+            else:
+                # no 7z: deliver a zip with the same structure
+                import zipfile, io
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                    for src, arc in files:
+                        z.write(src, arc)
+                data = buf.getvalue()
+                out_name = out_name.replace(".7z", ".zip")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{out_name}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
-        if parsed.path == "/investment/baseline":
-            self._send(200, page_shell("Investment model", BASELINE_HTML))
+        if parsed.path == "/project-finance/simulate":
+            PF_STORE["last_page"] = "simulate"
+            pf_ensure_loaded()
+            data = PF_STORE.get("data") or {}
+            sim = (PF_STORE.get("selected_sim") or data.get("sim_name") or "").strip()
+            project = PF_STORE.get("project") or ""
+            page = pf_fill_html(SIMULATE_HTML)
+            if sim:
+                page += f"<p>Simulation: {html.escape(project)} — {html.escape(sim)}</p>"
+            else:
+                page += "<p>No simulation selected.</p>"
+            self._send(200, page_shell("Project finance", page))
             return
-        if parsed.path.startswith("/investment/"):
-            self._send(200, page_shell("Investment model", INVEST_HTML))
+        if parsed.path.startswith("/project-finance/"):
+            page = pf_fill_html(INVEST_HTML)
+            self._send(200, page_shell("Project finance", page))
             return
         if parsed.path == "/compare-houses":
             self._send(200, page_shell("Compare houses", COMPARE_HTML))
@@ -1801,31 +1198,115 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/load":
             raw = (parse_qs(parsed.query).get("json") or [""])[0]
             path = Path(unquote(raw)).expanduser()
+            print(f"LOAD START: {path}")
+            # if PDF, look for the JSON sidecar
+            if path.suffix.lower() == ".pdf":
+                path = path.with_suffix(".json")
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 self._send(404, page_shell("Load", "<p>That simulation could not be read.</p><p><a href='/form'>Back to main</a></p>"))
                 return
             vals = sidecar_to_form_values(data) or {}
+            # Prefer top-level sidecar location (reliable) over form_values
+            # which may contain stale data from earlier state bugs.
+            if data.get("name"):
+                vals["name"] = str(data["name"])
+            if data.get("lat") is not None:
+                vals["lat"] = str(data["lat"])
+            if data.get("lon") is not None:
+                vals["lon"] = str(data["lon"])
+            print(f"LOAD vals: name={vals.get('name')}, lat={vals.get('lat')}")
             if data.get("demand"):
                 vals.update(demand_to_form_values(data["demand"]))
             vals = {str(k): "" if v is None else str(v) for k, v in vals.items()}
+            FORM_STATE.update(vals)
+            FORM_STATE["_last_loaded"] = str(path)
+            save_state()
             self._send(200, form_html(vals))
             return
         if parsed.path == "/version-test":
-            page = page_shell("Version", form_html(LAST_FORM) if False else "")
-            # show the form and reveal the box
             self._send(200, page_shell("Version", "<script>document.getElementById('verbox').style.display='block';</script>"))
             return
         if parsed.path == "/set-default":
             self._send(200, page_shell("Default", "<p>Use the button on the form.</p>"))
             return
+        if parsed.path == "/api/state":
+            self._send_json(200, FORM_STATE)
+            return
+        if parsed.path == "/pdf-output":
+            flags = [
+                ("english", 362, 2), ("german", 322, 2), ("spanish", 2, 32),
+                ("portugese", 322, 32), ("french", 42, 32), ("italian", 122, 32),
+                ("polish", 282, 32), ("czech", 482, 2), ("slovak", 442, 32),
+                ("hungarian", 82, 32), ("romanian", 362, 32), ("slovenian", 482, 32),
+                ("croatian", 562, 64),
+            ]
+            settings_path = HERE / "settings.json"
+            current = "english"
+            if settings_path.is_file():
+                try:
+                    current = json.loads(settings_path.read_text(encoding="utf-8")).get("pdf_language", "english")
+                except Exception:
+                    pass
+            qs = parse_qs(parsed.query)
+            if "lang" in qs:
+                current = qs["lang"][0]
+                try:
+                    data = {}
+                    if settings_path.is_file():
+                        data = json.loads(settings_path.read_text(encoding="utf-8"))
+                    data["pdf_language"] = current
+                    settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            items = []
+            for name, x, y in flags:
+                border = "3px solid #1a5fb4" if name == current else "3px solid transparent"
+                items.append(
+                    f'<a href="/pdf-output?lang={name}" style="display:inline-block;margin:6px 10px;text-align:center;text-decoration:none;color:inherit">'
+                    f'<div style="width:36px;height:24px;background:url(https://www.pege.org/pic/2024-01-18-logo.png) no-repeat {-x}px {-y}px;border:{border};border-radius:2px" '
+                    f'onmouseover="this.style.outline=\'2px solid #3584e4\'" onmouseout="this.style.outline=\'\'"></div>'
+                    f'<div style="font-size:12px;margin-top:2px">{name}</div></a>'
+                )
+            body = f"<h2>PDF output</h2><p>Current language: <b>{html.escape(current)}</b></p>" + "".join(items)
+            body += '<p style="margin-top:16px"><a href="/form">Back to main</a></p>'
+            self._send(200, page_shell("PDF output", body))
+            return
         if parsed.path == "/about":
             logo = '<p><a href="https://www.pege.org/" target="_blank"><img src="/pege-logo.png" alt="PEGE" width="420" height="120" style="width:420px;height:120px;background:#fff"></a></p>'
-            readme = HERE / "README.md"
             body = logo
-            if readme.is_file():
-                lines = readme.read_text(encoding="utf-8").splitlines()
+            body += f"<p><b>Current version</b> {html.escape(LOCAL_VERSION)} &nbsp; Built {html.escape(BUILD_VERSION)}</p>"
+            remote = remote_version(5.0)
+            newer = False
+            if remote:
+                try:
+                    newer = float(remote) > float(LOCAL_VERSION)
+                except ValueError:
+                    newer = False
+            view = (parse_qs(parsed.query).get("view") or ["local"])[0]
+            if newer:
+                active = "remote" if view == "remote" else "local"
+                body += '<p style="margin:12px 0">'
+                body += f'<a href="/about?view=local" style="padding:6px 12px;margin-right:8px;border-radius:4px;text-decoration:none;background:{"#1a5fb4" if active=="local" else "#e0e0e0"};color:{"#fff" if active=="local" else "#333"}">Current version on Your computer</a>'
+                body += f'<a href="/about?view=remote" style="padding:6px 12px;border-radius:4px;text-decoration:none;background:{"#1a5fb4" if active=="remote" else "#e0e0e0"};color:{"#fff" if active=="remote" else "#333"}">New version available</a>'
+                body += '</p>'
+            body += "<h2>README</h2>"
+            readme_text = ""
+            if view == "remote" or not (HERE / "README.md").is_file():
+                try:
+                    import urllib.request
+                    req = urllib.request.Request("https://raw.githubusercontent.com/pegefounder/energy-sim/main/README.md", headers={"User-Agent": "PEGE-energy-sim"})
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        readme_text = resp.read().decode("utf-8", errors="replace")
+                except Exception:
+                    readme_text = ""
+            if not readme_text:
+                local = HERE / "README.md"
+                if local.is_file():
+                    readme_text = local.read_text(encoding="utf-8")
+            if readme_text:
+                lines = readme_text.splitlines()
                 html_lines = []
                 for line in lines:
                     s = line.strip()
@@ -1845,6 +1326,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 body += "<p>README.md not found in the program folder.</p>"
             body += """
+<p style="margin-top:1em"><a href="https://pege.org/energy-sim/" target="_blank">https://pege.org/energy-sim/</a></p>
 <div style="text-align:right;margin-top:1.2em">
 <form action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_blank" style="display:inline">
 <input type="hidden" name="cmd" value="_s-xclick">
@@ -1858,12 +1340,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path in ("/", "/form"):
             qs = parse_qs(parsed.query, keep_blank_values=True)
+            vals = FORM_STATE.copy()
             if parsed.query:
-                self._send(200, form_html(form_values_from_qs(qs)))
+                vals.update(form_values_from_qs(qs))
             elif LAST_FORM:
-                self._send(200, form_html(LAST_FORM))
-            else:
-                self._send(200, form_html(startup_form_values()))
+                vals.update(LAST_FORM)
+            self._send(200, form_html(vals))
             return
         if parsed.path == "/new":
             self._send(200, form_html())
@@ -1888,8 +1370,43 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"parent": str(parent), "folders": list_location_folders(parent)}
             self._send_json(200, payload)
             return
+
+        if parsed.path == "/api/project-finance":
+            qs = parse_qs(parsed.query)
+            project = (qs.get("project") or [""])[0]
+            sim = (qs.get("sim") or [""])[0]
+            if not project:
+                self._send_json(200, {"data": {}})
+                return
+            # do not overwrite the store if it already holds this project
+            if PF_STORE.get("project") == project and PF_STORE.get("data"):
+                data = PF_STORE["data"]
+            else:
+                data = pf_load(project, sim if sim else None)
+                if data:
+                    PF_STORE["data"] = data
+            if sim:
+                PF_STORE["selected_sim"] = sim
+            self._send_json(200, {"project": project, "sim": sim, "data": data})
+            return
+        if parsed.path == "/api/projects":
+            root = data_root() / "project-finance"
+            projects = []
+            if root.exists():
+                for d in sorted(root.iterdir()):
+                    if d.is_dir():
+                        import re as _re
+                        def _sim_key(stem):
+                            m = _re.match(r"\d{4}-\d{2}-\d{2} \d{4} (.+)", stem)
+                            return (m.group(1).lower() if m else stem.lower(), stem)
+                        sims = sorted((f.stem for f in d.glob("*.json") if f.stem != d.name), key=_sim_key)
+                        projects.append({"name": d.name, "sims": sims})
+            self._send_json(200, {"projects": projects})
+            return
         if parsed.path == "/api/workspace":
-            parent = data_root()
+            qs = parse_qs(parsed.query)
+            outdir = (qs.get("outdir") or [""])[0]
+            parent = Path(outdir) if outdir else data_root()
             locs = []
             for rec in list_location_folders(parent):
                 parsed_loc = parse_location_folder_name(rec["name"].replace("  (parent)", "").strip())
@@ -1935,7 +1452,18 @@ class Handler(BaseHTTPRequestHandler):
                 stems.setdefault(pth.stem, {})[pth.suffix.lower()] = pth
             for stem, pair in stems.items():
                 chosen = pair.get(".pdf") or pair.get(".json")
-                files.append({"name": stem, "path": str(chosen)})
+                info = {"name": stem, "path": str(chosen)}
+                js = pair.get(".json")
+                if js and js.is_file():
+                    try:
+                        side = json.loads(js.read_text(encoding="utf-8"))
+                        info["lat"] = side.get("lat")
+                        info["lon"] = side.get("lon")
+                        info["locname"] = side.get("name") or ""
+                        info["simname"] = side.get("simname") or ""
+                    except Exception:
+                        pass
+                files.append(info)
             self._send_json(200, {"object": name, "files": files, "folder": str(folder)})
             return
         if parsed.path == "/stop":
@@ -1988,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
             log("Comparing A and B…")
             log(f"A  {obj1} {stem1}")
             log(f"B  {obj2} {stem2}")
-            from pege_energy_sim_report import compares_root
+            from pege_energy_sim_common import compares_root
             def parts(stem: str):
                 # date time - simulation name - location
                 bits = stem.split(" - ", 2)
@@ -2008,7 +1536,8 @@ class Handler(BaseHTTPRequestHandler):
                 if loc and loc != oloc:
                     out.append(loc)
                 return " - ".join(out)
-            built = f"{obj1} {stem1} vs {side(obj2, stem2, obj1, stem1)}.pdf"
+            stamp = datetime.now().strftime("%Y-%m-%d %H%M")
+            built = f"{obj1} {stamp} - {stem1} vs {side(obj2, stem2, obj1, stem1)}.pdf"
             name = (qs.get("name") or [""])[0].strip() or built
             if not name.lower().endswith(".pdf"):
                 name += ".pdf"
@@ -2028,10 +1557,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out = compares_root(parent) / name
             try:
-                from pege_energy_sim_report import compare_reports
+                from pege_energy_sim_compare_houses import compare_reports
+                set_language(_pdf_lang())
                 compare_reports(path_a, path_b, out, label_a=f"{obj1} {stem1}", label_b=f"{obj2} {stem2}", log=log)
             except Exception as exc:
-                emit(f"<span class='err'>{html.escape(str(exc))}</span><br></div>")
+                import traceback
+                emit(f"<span class='err'>{html.escape(str(exc))}</span><br>")
+                emit(f"<pre>{html.escape(traceback.format_exc())}</pre></div>")
                 emit("<p class='nav'><a href='/form'>Back to main</a></p></main></body></html>")
                 return
             token = uuid.uuid4().hex
@@ -2107,9 +1639,41 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if parsed.path == "/delete-files":
+            qs = parse_qs(parsed.query)
+            raw = (qs.get("files") or [""])[0]
+            names = [n for n in raw.split("|") if n]
+            roots = [data_root() / "objects", data_root() / "project-finance"]
+            deleted = 0
+            for name in names:
+                for root in roots:
+                    base = root / name
+                    for ext in (".pdf", ".json"):
+                        pair = Path(str(base) + ext)
+                        if pair.is_file():
+                            pair.unlink()
+                            deleted += 1
+            back = (qs.get("back") or ["/files"])[0]
+            self.send_response(302)
+            self.send_header("Location", back)
+            self.end_headers()
+            return
         if parsed.path == "/rerun":
             self._handle_rerun()
             return
+        # Serve object and project-finance files linked from PDFs
+        if parsed.path.startswith("/objects/") or parsed.path.startswith("/project-finance/"):
+            rel = unquote(parsed.path.lstrip("/"))
+            path = data_root() / rel
+            if path.is_file():
+                data = path.read_bytes()
+                ctype = "application/pdf" if path.suffix == ".pdf" else "application/octet-stream"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
         self._send(404, page_shell("Not found", "<p>Unknown URL. <a href='/'>Back to main</a></p>"))
 
     def _handle_rerun(self) -> None:
@@ -2185,17 +1749,69 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             fv = old_data.get("form_values") or {}
             # Rebuild a minimal job from the stored form values and re-run.
-            from pege_energy_sim_report import build_report
+            from pege_energy_sim_common import build_report
             try:
+                lang = fv.get("pdf_language") or ""
+                if not lang:
+                    settings = Path(__file__).with_name("settings.json")
+                    if settings.is_file():
+                        try:
+                            lang = json.loads(settings.read_text(encoding="utf-8")).get("pdf_language") or ""
+                        except Exception:
+                            pass
+                lang = lang or _pdf_lang()
+                set_language(lang)
+                # Parse PV arrays from form values
+                pv_list = []
+                for i in range(1, 26):
+                    sl = fv.get(f"slope{i}")
+                    az = fv.get(f"az{i}")
+                    wp = fv.get(f"wp{i}")
+                    label = fv.get(f"pvname{i}")
+                    if not sl or not az or not wp:
+                        continue
+                    try:
+                        slope = float(str(sl).replace(",", "."))
+                        azimuth = float(str(az).replace(",", "."))
+                        watts = float(str(wp).replace(",", "."))
+                    except ValueError:
+                        continue
+                    if watts <= 0:
+                        continue
+                    dist_s = fv.get(f"dist{i}")
+                    height_s = fv.get(f"height{i}")
+                    wall_d = wall_h = None
+                    if dist_s and height_s:
+                        try:
+                            wall_d = int(float(str(dist_s).replace(",", ".")))
+                            wall_h = int(float(str(height_s).replace(",", ".")))
+                        except ValueError:
+                            pass
+                    bifacial = str(fv.get(f"bifacial{i}", "")).lower() in {"1", "on", "yes", "true"}
+                    bipct_s = fv.get(f"bifaciality{i}")
+                    bifaciality = None
+                    if bipct_s:
+                        try:
+                            bifaciality = float(str(bipct_s).replace(",", "."))
+                            if bifaciality > 1.5:
+                                bifaciality = bifaciality / 100.0
+                        except ValueError:
+                            pass
+                    elif bifacial:
+                        bifaciality = 0.80
+                    pv_list.append((label or f"PV {i}", slope, azimuth, watts, wall_d, wall_h, bifacial, bifaciality))
+                # Prefer top-level sidecar fields (reliable) over form_values
+                # (which may contain stale data from earlier state bugs).
+                name = old_data.get("name") or fv.get("name") or ""
+                lat = float(old_data.get("lat") or fv.get("lat") or 0)
+                lon = float(old_data.get("lon") or fv.get("lon") or 0)
+                log(f"  location: {name}  {lat}  {lon}")
                 new_pdf = build_report(
-                    name=fv.get("name") or old_data.get("name") or "",
-                    lat=float(fv.get("lat") or old_data.get("lat") or 0),
-                    lon=float(fv.get("lon") or old_data.get("lon") or 0),
-                    pv_list=[
-                        (a.get("label"), a.get("slope"), a.get("azimuth"), a.get("wp"),
-                         a.get("wall_d"), a.get("wall_h"), a.get("bifacial"), a.get("bifaciality"))
-                        for a in (old_data.get("arrays") or [])
-                    ],
+                    lang=lang,
+                    name=name,
+                    lat=lat,
+                    lon=lon,
+                    pv_list=pv_list,
                     startyear=int(fv.get("startyear") or old_data.get("startyear") or 2005),
                     endyear=int(fv.get("endyear") or old_data.get("endyear") or 2023),
                     loss=float(fv.get("loss") or old_data.get("loss") or 14),
@@ -2206,7 +1822,7 @@ class Handler(BaseHTTPRequestHandler):
                     form_values=fv,
                     result_folder=folder,
                     object_name=old_data.get("object") or folder_name,
-                    demand=old_data.get("demand"),
+                    demand=parse_demand_fields(fv) if fv else old_data.get("demand"),
                 )
             except Exception as exc:
                 log(f"  run failed: {exc}")
@@ -2215,9 +1831,9 @@ class Handler(BaseHTTPRequestHandler):
             log(f"  wrote {new_pdf.name}")
         # Write the difference report
         if results:
-            from pege_energy_sim_report import compares_root
+            from pege_energy_sim_common import compares_root
             stamp = datetime.now().strftime("%Y-%m-%d %H%M")
-            out = compares_root(data_root()) / f"{stamp} difference report from rerun.pdf"
+            out = compares_root(data_root()) / f"{stamp} - difference report from rerun.pdf"
             self._write_difference_pdf(results, out, log)
             log(f"Difference report: {out}")
             emit("</div>")
@@ -2299,19 +1915,284 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/investment":
+        if parsed.path == "/api/state":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            if raw:
+                new_data = json.loads(raw)
+                print(f"STATE: slope1={new_data.get('slope1')}")
+                FORM_STATE.update(new_data)
+                save_state()
+            self._send_json(200, {"ok": True})
+            return
+        # Field blur / change report — store in memory immediately
+        if parsed.path == "/project-finance/field":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            data = parse_form(raw, self.headers.get("Content-Type", ""))
+            page = (data.get("page") or data.get("letter") or "general").lower()
+            field = data.get("field") or data.get("name") or ""
+            value = data.get("value") or ""
+            project = data.get("project") or PF_STORE.get("project") or ""
+            if project:
+                PF_STORE["project"] = project
+            if field:
+                if page == "baseline":
+                    PF_STORE.setdefault("variants", {}).setdefault("BASELINE", {})[field] = value
+                elif page in "abcde":
+                    PF_STORE.setdefault("variants", {}).setdefault(page.upper(), {})[field] = value
+                else:
+                    PF_STORE.setdefault("data", {})[field] = value
+            self._send_json(200, {"ok": True})
+            return
+        if parsed.path == "/project-finance/save":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            data = parse_form(raw, self.headers.get("Content-Type", ""))
+            project = data.get("project") or PF_STORE.get("project") or ""
+            sim = data.get("sim") or ""
+            mode = data.get("mode") or "new"
+            if not project or not sim:
+                self._send(400, b"Project and simulation name required")
+                return
+            PF_STORE["project"] = project
+            PF_STORE["sim"] = sim
+            folder = pf_folder(project)
+            if mode == "keep":
+                # Overwrite the currently selected simulation (keeps its timestamp)
+                sel = PF_STORE.get("selected_sim") or ""
+                if sel:
+                    path = folder / f"{sel}.json"
+                    if not path.is_file():
+                        path = folder / f"{datetime.now().strftime('%Y-%m-%d %H%M')} - {pf_safe(sim)}.json"
+                else:
+                    candidates = sorted(folder.glob(f"* - {pf_safe(sim)}.json"), key=lambda p: p.stat().st_mtime)
+                    path = candidates[-1] if candidates else folder / f"{datetime.now().strftime('%Y-%m-%d %H%M')} - {pf_safe(sim)}.json"
+            else:
+                stamp = datetime.now().strftime("%Y-%m-%d %H%M")
+                path = folder / f"{stamp} - {pf_safe(sim)}.json"
+            fv = dict(PF_STORE.get("data") or {})
+            variants = dict(PF_STORE.get("variants") or {})
+            base = dict(variants.get("BASELINE") or {})
+            for k in ("obj_n","sim_n","obj_e","sim_e","obj_p","sim_p","base_desc","baseline_description","inc_inc"):
+                if base.get(k) and not fv.get(k):
+                    fv[k] = base[k]
+            # Do not let an empty form value wipe a stored variant value
+            for k in list(base.keys()):
+                if not base.get(k) and fv.get(k):
+                    base[k] = fv[k]
+            variants["BASELINE"] = base
+            payload = {"model": project, "simulation": sim, "form_values": fv, "variants": variants}
+            path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            PF_STORE["selected_sim"] = path.stem
+            # simple changes list against previous file if any
+            changes = []
+            prev = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime)
+            prev = [p for p in prev if p != path]
+            if prev:
+                try:
+                    old = json.loads(prev[-1].read_text(encoding="utf-8"))
+                    old_fv = old.get("form_values") or {}
+                    for k, v in sorted((payload.get("form_values") or {}).items()):
+                        ov = str(old_fv.get(k, ""))
+                        nv = str(v)
+                        if ov != nv and (ov or nv):
+                            changes.append((k, ov, nv))
+                    old_var = old.get("variants") or {}
+                    new_var = payload.get("variants") or {}
+                    for page in sorted(set(old_var) | set(new_var)):
+                        ovp = old_var.get(page) or {}
+                        nvp = new_var.get(page) or {}
+                        for k in sorted(set(ovp) | set(nvp)):
+                            ov = str(ovp.get(k, ""))
+                            nv = str(nvp.get(k, ""))
+                            if ov != nv and (ov or nv):
+                                changes.append((f"{page}.{k}", ov, nv))
+                except Exception:
+                    pass
+            rows = "".join(f"<tr><td>{html.escape(k)}</td><td>{html.escape(o)}</td><td>{html.escape(n)}</td></tr>" for k, o, n in changes)
+            body = f"""<h2>Saved: {html.escape(path.name)}</h2>
+<p>{len(changes)} change(s)</p>
+<table style="border-collapse:collapse;width:100%">
+<tr style="background:#f0f0f0"><th style="text-align:left;padding:6px;border:1px solid #ddd">Field</th><th style="text-align:left;padding:6px;border:1px solid #ddd">Old</th><th style="text-align:left;padding:6px;border:1px solid #ddd">New</th></tr>
+{rows}
+</table>
+<p><a href="/project-finance?view=general">Back to project finance</a></p>"""
+            self._send(200, page_shell("Saved", body))
+            return
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            data = parse_form(raw, self.headers.get("Content-Type", ""))
+            page = data.get("page") or "general"
+            field = data.get("field") or ""
+            value = data.get("value") or ""
+            project = data.get("project") or PF_STORE.get("project") or ""
+            if project:
+                PF_STORE["project"] = project
+            if field:
+                if page == "baseline":
+                    PF_STORE.setdefault("variants", {}).setdefault("BASELINE", {})[field] = value
+                elif page in "abcde":
+                    PF_STORE.setdefault("variants", {}).setdefault(page.upper(), {})[field] = value
+                else:
+                    PF_STORE.setdefault("data", {})[field] = value
+            self._send_json(200, {"ok": True})
+            return
+        # Object house form flush — keep LAST_FORM when the user leaves the page
+        if parsed.path == "/form-flush":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            fields = parse_form(raw, self.headers.get("Content-Type", ""))
+            if fields:
+                LAST_FORM.clear()
+                LAST_FORM.update({str(k): v[0] if isinstance(v, list) else str(v) for k, v in fields.items()})
+            self._send_json(200, {"ok": True})
+            return
+        # Save configuration
+        if parsed.path == "/save-config":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            fields = parse_form(raw, self.headers.get("Content-Type", ""))
+            job = parse_job(fields)
+            mode = fields.get("mode", [""])[0] if isinstance(fields.get("mode"), list) else fields.get("mode", "")
+            ofolder = object_folder(job["outdir"], job["object"])
+            ofolder.mkdir(parents=True, exist_ok=True)
+            simname = job.get("simname") or "config"
+            loc = job.get("name") or ""
+            lat = job.get("lat") or ""
+            lon = job.get("lon") or ""
+            locpart = f" - {loc} - {lat} - {lon}" if loc else ""
+            if mode == "new":
+                stamp = datetime.now().strftime("%Y-%m-%d %H%M")
+                json_path = ofolder / f"{stamp} - {simname}{locpart}.json"
+            else:
+                candidates = list(ofolder.glob(f"* {simname}*.json"))
+                json_path = candidates[0] if candidates else ofolder / f"{datetime.now().strftime('%Y-%m-%d %H%M')} - {simname}{locpart}.json"
+            vals = job_to_form_values(job)
+            remark_text = first(fields, "locremark")[:2000]
+            if remark_text:
+                location_remark(job["lat"], job["lon"], cache_dir=data_root(), text=remark_text)
+                vals["locremark"] = remark_text
+            print(f"SAVE: slope1={vals.get('slope1')}")
+            old_vals = {}
+            last_path = FORM_STATE.get("_last_loaded")
+            if not last_path:
+                loc = job.get("name") or ""
+                pattern = f"* {simname}*{loc}*.json" if loc else f"* {simname}*.json"
+                existing = sorted(ofolder.glob(pattern), key=lambda p: p.stat().st_mtime)
+                if existing:
+                    last_path = str(existing[-1])
+            print(f"COMPARE: last_path={last_path}")
+            compare_path = Path(last_path) if last_path else json_path
+            print(f"COMPARE: compare_path={compare_path}, exists={compare_path.exists()}")
+            if compare_path.exists():
+                try:
+                    old_data = json.loads(compare_path.read_text(encoding="utf-8"))
+                    print(f"COMPARE: keys={list(old_data.keys())[:5]}")
+                    old_vals = old_data.get("form_values", {})
+                    print(f"COMPARE: old_vals count={len(old_vals)}")
+                    print(f"COMPARE: old slope1={old_vals.get('slope1')}")
+                except Exception as e:
+                    print(f"COMPARE: error={e}")
+                    pass
+            changes = []
+            for k, v in sorted(vals.items()):
+                old = str(old_vals.get(k, ""))
+                new = str(v)
+                if old != new and (old or new):
+                    changes.append((k, old, new))
+            sidecar = {
+                "object": job["object"],
+                "software_version": LOCAL_VERSION,
+                "name": job.get("name") or "",
+                "lat": job.get("lat") or "",
+                "lon": job.get("lon") or "",
+                "form_values": vals,
+            }
+            json_path.write_text(json.dumps(sidecar, indent=2, ensure_ascii=False), encoding="utf-8")
+            FORM_STATE.update(vals)
+            FORM_STATE["_last_loaded"] = str(json_path)
+            LAST_FORM.clear()
+            LAST_FORM.update(vals)
+            save_state()
+            rows = "".join(f"<tr><td>{html.escape(k)}</td><td>{html.escape(o)}</td><td>{html.escape(n)}</td></tr>" for k, o, n in changes)
+            body = f"""<h2>Saved: {html.escape(json_path.name)}</h2>
+<p>{len(changes)} change(s)</p>
+<table style="border-collapse:collapse;width:100%">
+<tr style="background:#f0f0f0"><th style="text-align:left;padding:6px;border:1px solid #ddd">Field</th><th style="text-align:left;padding:6px;border:1px solid #ddd">Old</th><th style="text-align:left;padding:6px;border:1px solid #ddd">New</th></tr>
+{rows}
+</table>
+<p><a href="/form">Back to form</a></p>"""
+            self._send(200, page_shell("Saved", body))
+            return
+        # Flush on leaving page or main menu change — write default JSON
+        if parsed.path == "/project-finance/flush":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            data = parse_form(raw, self.headers.get("Content-Type", ""))
+            project = data.get("project") or PF_STORE.get("project") or ""
+            letter = (data.get("letter") or "").upper()
+            if project:
+                PF_STORE["project"] = project
+                if letter in "ABCDE" or letter == "BASELINE":
+                    store = PF_STORE.setdefault("variants", {}).setdefault(letter, {})
+                else:
+                    store = PF_STORE.setdefault("data", {})
+                for k, v in data.items():
+                    if k in ("project", "sim", "letter"):
+                        continue
+                    if v == "" and store.get(k):
+                        continue
+                    store[k] = v
+                pf_save_default()
+            self._send_json(200, {"ok": True})
+            return
+        if parsed.path == "/project-finance/baseline":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            data = parse_form(raw, self.headers.get("Content-Type", ""))
+            # drop garbage
+            data = {k: v for k, v in data.items() if "\r" not in k and not k.startswith("------")}
+            project = data.get("model_name") or PF_STORE.get("project") or ""
+            if project:
+                PF_STORE["project"] = project
+                PF_STORE.setdefault("data", {}).update(data)
+                pf_save_default()
+            self._send(200, page_shell("Project finance", pf_fill_html(BASELINE_HTML)))
+            return
+        if parsed.path == "/project-finance/set-default":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            raw = self.rfile.read(length).decode("utf-8", errors="replace")
+            ct = self.headers.get("Content-Type", "")
+            data = parse_form(raw, ct)
+            model = (data.get("model_name") or PF_STORE.get("project") or "").strip()
+            if not model:
+                self._send(200, page_shell("Project finance", INVEST_HTML + "<p>No project name. Enter a project name first.</p>"))
+                return
+            PF_STORE["project"] = model
+            PF_STORE["data"] = data
+            pf_save_default()
+            msg = '<p>Default configuration saved for ' + html.escape(model) + '.</p><p><a href="/project-finance?view=general">Back to Project finance</a></p>'
+            self._send(200, page_shell("Project finance", INVEST_HTML + msg))
+            return
+
+        parsed = urlparse(self.path)
+        if parsed.path == "/project-finance":
             length = int(self.headers.get("Content-Length", "0") or 0)
             raw = self.rfile.read(length).decode("utf-8", errors="replace")
             fields = parse_qs(raw, keep_blank_values=True)
             data = {str(k): v[0] if isinstance(v, list) else str(v) for k, v in fields.items()}
-            folder = data_root() / "investment-models"
-            folder.mkdir(parents=True, exist_ok=True)
-            name = data.get("proj_name") or "investment"
-            stamp = datetime.now().strftime("%Y-%m-%d %H%M")
-            safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip()
-            path = folder / f"{stamp} {safe}.json"
-            path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-            self._send(200, page_shell("Investment model", INVEST_HTML + f"<p>Saved {path.name}</p>"))
+            model = (data.get("model_name") or PF_STORE.get("project") or "investment").strip()
+            sim = (data.get("sim_name") or PF_STORE.get("sim") or "simulation").strip()
+            PF_STORE["project"] = model
+            PF_STORE["sim"] = sim
+            PF_STORE["data"] = data
+            pf_save_default()
+            stem = pf_save_simulation(sim) if sim and sim != "simulation" else None
+            msg = f"<p>Saved default for {html.escape(model)}</p>"
+            if stem:
+                msg += f"<p>simulation {html.escape(stem)}.json</p>"
+            self._send(200, page_shell("Project finance", INVEST_HTML + msg))
             return
         if urlparse(self.path).path == "/set-default":
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -2321,10 +2202,7 @@ class Handler(BaseHTTPRequestHandler):
             obj_name = (vals.get("object") or "").strip()
             if obj_name:
                 ofolder = object_folder(data_root(), obj_name)
-                object_definition_path(ofolder).write_text(
-                    json.dumps({"object": obj_name, "form_values": vals, "default": True}, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
+                # bare {object}.json is abandoned
             LAST_FORM.clear()
             LAST_FORM.update(vals)
             page = form_html(vals)
@@ -2416,21 +2294,7 @@ class Handler(BaseHTTPRequestHandler):
                 LAST_FORM[f"use{i}"] = "0"
             if f"bifacial{i}" not in fields:
                 LAST_FORM[f"bifacial{i}"] = "0"
-        obj_name = first(fields, "object").strip()
-        if obj_name:
-            try:
-                ofolder = object_folder(data_root(), obj_name)
-                path = object_definition_path(ofolder)
-                marked = False
-                if path.is_file():
-                    marked = bool(json.loads(path.read_text(encoding="utf-8")).get("default"))
-                if not marked:
-                    path.write_text(
-                        json.dumps({"object": obj_name, "form_values": dict(LAST_FORM)}, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-            except Exception:
-                pass
+        # bare {object}.json is abandoned; do not write it
         remark_text = first(fields, "locremark")[:2000]
         try:
             job = parse_job(fields)
@@ -2473,13 +2337,13 @@ class Handler(BaseHTTPRequestHandler):
                     ],
                     "demand": job.get("demand") or {},
                 }
-                object_definition_path(ofolder).write_text(
-                    json.dumps(defn, indent=2, ensure_ascii=False), encoding="utf-8"
-                )
-                log(f"Object definition: {object_definition_path(ofolder)}")
+                # bare {object}.json is abandoned
+                log(f"Results folder: {ofolder}")
                 result_folder = ofolder
                 log(f"Results folder: {ofolder}")
+            set_language(_pdf_lang())
             pdf_path = build_report(
+                lang=_pdf_lang(),
                 name=job["name"],
                 lat=job["lat"],
                 lon=job["lon"],
@@ -2546,22 +2410,16 @@ def big_box(title: str, message: str, error: bool = False) -> None:
     print(bar)
     print(message)
     print(bar + "\n")
-    try:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        if error:
-            messagebox.showerror(title, message)
-        else:
-            messagebox.showinfo(title, message)
-        root.destroy()
-    except Exception:
-        pass
 
+
+def ensure_base_folders() -> None:
+    root = data_root()
+    for name in ("objects", "compares", "locations", "project-finance"):
+        path = root / name
+        path.mkdir(parents=True, exist_ok=True)
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_base_folders()
     port = DEFAULT_PORT
     args = list(sys.argv[1:] if argv is None else argv)
     if "--port" in args:
@@ -2582,11 +2440,22 @@ def main(argv: list[str] | None = None) -> int:
             print("Close that copy first: in its terminal press Ctrl+C.")
             print(f"Or open the form that is already running:\nhttp://{HOST}:{port}/")
             print("Do not start a second copy over the first one.")
-            print("Press Ctrl+C or Enter to close this window.")
+            print("Press Enter to close this window.")
+            print("Press any other key to retry.")
             print("=" * 62 + "\n")
             try:
-                input()
-            except (KeyboardInterrupt, EOFError):
+                import termios, tty
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd)
+                    key = sys.stdin.read(1)
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                if key not in ("\r", "\n", "\x03"):
+                    print()
+                    return main()
+            except (KeyboardInterrupt, EOFError, Exception):
                 pass
             return 1
         raise
