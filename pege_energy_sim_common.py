@@ -65,7 +65,7 @@ def first(fields: dict, key: str, default: str = "") -> str:
 
 HOST = "127.0.0.1"
 
-LOCAL_VERSION = "0.2"
+LOCAL_VERSION = "0.3"
 
 DEFAULT_PORT = 8765
 N_ROWS = 25

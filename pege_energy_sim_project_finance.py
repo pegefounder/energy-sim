@@ -1571,14 +1571,14 @@ function drawChart1(months) {
     if (i >= 0 && i < months.length) {
       const m = months[i];
       const rows = [
-        ["Income (other)", m.income, m.income_real],
-        ["Energy sold", m.energy_sold, m.energy_sold_real],
-        ["Interest (bank)", m.interest, m.interest_real],
-        ["Month balance", m.month_balance, m.month_balance_real],
-        ["Expenses (other)", m.expenses, m.expenses_real],
-        ["Energy purchased", m.energy_purchased, m.energy_purchased_real],
-        ["Depreciation/maintenance", m.depreciation, m.depreciation_real],
-        ["Downpayment credit", m.credit_payment, m.credit_payment_real],
+        [_t("Income (other)"), m.income, m.income_real],
+        [_t("Energy sold"), m.energy_sold, m.energy_sold_real],
+        [_t("Interest (bank)"), m.interest, m.interest_real],
+        [_t("Month balance"), m.month_balance, m.month_balance_real],
+        [_t("Expenses (other)"), m.expenses, m.expenses_real],
+        [_t("Energy purchased"), m.energy_purchased, m.energy_purchased_real],
+        [_t("Depreciation/maintenance"), m.depreciation, m.depreciation_real],
+        [_t("Downpayment credit"), m.credit_payment, m.credit_payment_real],
       ];
       showTip(e, tipTable("Year " + m.year + " month " + (m.month + 1) + " (" + m.phase + ")", rows));
     }
@@ -1631,8 +1631,8 @@ function drawChart2(months) {
     if (i >= 0 && i < months.length) {
       const m = months[i];
       const rows = [
-        ["Bank account", m.bank, m.bank_real],
-        ["Rest value all credits", m.credit, m.credit_real],
+        [_t("Bank account"), m.bank, m.bank_real],
+        [_t("Rest value all credits"), m.credit, m.credit_real],
       ];
       (m.credits || []).forEach(c => {
         if (c.rest > 0) rows.push([c.label, c.rest, c.rest]);
@@ -2077,6 +2077,8 @@ def pf_build_pdf(progress=None) -> str | None:
 
     PDF_PROGRESS.clear()
     pf_ensure_loaded()
+    from pege_energy_sim_common import set_language, _pdf_lang, _t
+    set_language(_pdf_lang())
     project = PF_STORE.get("project") or ""
     if not project:
         return None
@@ -2118,47 +2120,47 @@ def pf_build_pdf(progress=None) -> str | None:
         fig = new_page(f"{project} — {selected}")
         ax = fig.add_axes([0.03, 0.03, 0.94, 0.90])
         ax.axis("off")
-        ax.text(0.0, 0.98, "Global situation", fontsize=11, fontweight="bold", va="top")
+        ax.text(0.0, 0.98, _t("Global situation"), fontsize=11, fontweight="bold", va="top")
         g_rows = [
-            ["", "value"],
-            ["Bank interest %", str(data.get("bank_int") or "")],
-            ["Credit interest %", str(data.get("credit_int") or "")],
-            ["General inflation %", str(data.get("inf_gen") or data.get("inf_avg") or "")],
-            ["Electricity inflation %", str(data.get("inf_el") or "")],
-            ["Fossil inflation %", str(data.get("inf_fos") or "")],
+            ["", _t("value")],
+            [_t("Bank interest %"), str(data.get("bank_int") or "")],
+            [_t("Credit interest %"), str(data.get("credit_int") or "")],
+            [_t("General inflation %"), str(data.get("inf_gen") or data.get("inf_avg") or "")],
+            [_t("Electricity inflation %"), str(data.get("inf_el") or "")],
+            [_t("Fossil inflation %"), str(data.get("inf_fos") or "")],
         ]
         t1 = ax.table(cellText=g_rows, loc="upper left", cellLoc="left",
                       colWidths=[0.28, 0.14], bbox=[0.0, 0.62, 0.42, 0.32])
         style_table(t1)
         c_rows = [
             ["", "12-20 y", "20-35 y", ">35 y", "ground"],
-            ["Credit years", str(data.get("y_12_20") or ""), str(data.get("y_20_35") or ""), str(data.get("y_35") or ""), str(data.get("y_ground") or "")],
-            ["Depreciation % / year", str(data.get("p_12_20") or ""), str(data.get("p_20_35") or ""), str(data.get("p_35") or ""), str(data.get("p_ground") or "")],
+            [_t("Credit years"), str(data.get("y_12_20") or ""), str(data.get("y_20_35") or ""), str(data.get("y_35") or ""), str(data.get("y_ground") or "")],
+            [_t("Depreciation % / year"), str(data.get("p_12_20") or ""), str(data.get("p_20_35") or ""), str(data.get("p_35") or ""), str(data.get("p_ground") or "")],
         ]
         t2 = ax.table(cellText=c_rows, loc="upper left", cellLoc="center",
                       colWidths=[0.16, 0.08, 0.08, 0.08, 0.08], bbox=[0.50, 0.62, 0.48, 0.32])
         style_table(t2)
-        ax.text(0.0, 0.58, "Individual situation", fontsize=11, fontweight="bold", va="top")
-        ax.text(0.52, 0.58, "Jump to", fontsize=11, fontweight="bold", va="top")
+        ax.text(0.0, 0.58, _t("Individual situation"), fontsize=11, fontweight="bold", va="top")
+        ax.text(0.52, 0.58, _t("Jump to"), fontsize=11, fontweight="bold", va="top")
         base = variants.get("BASELINE") or {}
         i_rows = [
-            ["", "value"],
-            ["Income increase %", str(base.get("inc_inc") or "")],
-            ["On bank account", str(base.get("base_money") or "")],
-            ["Years to pension", str(base.get("years_pension") or "")],
-            ["Decrease pension % / year emergency", str(base.get("pens_dec") or "")],
-            ["Income normal", str(base.get("inc_n") or "")],
-            ["Income emergency", str(base.get("inc_e") or "")],
-            ["Income pension", str(base.get("inc_p") or "")],
-            ["Expenses normal", str(base.get("exp_n") or "")],
-            ["Expenses emergency", str(base.get("exp_e") or "")],
-            ["Expenses pension", str(base.get("exp_p") or "")],
+            ["", _t("value")],
+            [_t("Income increase %"), str(base.get("inc_inc") or "")],
+            [_t("On bank account"), str(base.get("base_money") or "")],
+            [_t("Years to pension"), str(base.get("years_pension") or "")],
+            [_t("Decrease pension % / year emergency"), str(base.get("pens_dec") or "")],
+            [_t("Income normal"), str(base.get("inc_n") or "")],
+            [_t("Income emergency"), str(base.get("inc_e") or "")],
+            [_t("Income pension"), str(base.get("inc_p") or "")],
+            [_t("Expenses normal"), str(base.get("exp_n") or "")],
+            [_t("Expenses emergency"), str(base.get("exp_e") or "")],
+            [_t("Expenses pension"), str(base.get("exp_p") or "")],
         ]
         t3 = ax.table(cellText=i_rows, loc="upper left", cellLoc="left",
                       colWidths=[0.28, 0.12], bbox=[0.0, 0.02, 0.42, 0.52])
         style_table(t3)
         # Page-number table: rows = scenarios, columns = stress levels
-        jump_header = ["", "Normal", "Stress 1", "Stress 2", "Stress 3", "Stress 4"]
+        jump_header = ["", _t("Normal"), _t("Stress 1"), _t("Stress 2"), _t("Stress 3"), _t("Stress 4")]
         jump_rows = [jump_header]
         letters = [("baseline", "BASELINE"), ("a", "A"), ("b", "B"), ("c", "C"), ("d", "D"), ("e", "E")]
         pg = 2
@@ -2183,8 +2185,8 @@ def pf_build_pdf(progress=None) -> str | None:
             v = variants.get(key) or {}
             if not any(str(x).strip() for x in v.values()):
                 continue
-            log(f"Scenario {key}")
-            fig = new_page(f"Scenario {key}")
+            log(f"{_t('Scenario')} {key}")
+            fig = new_page(f"{_t('Scenario')} {key}")
             ax = fig.add_axes([0.06, 0.06, 0.88, 0.86])
             ax.axis("off")
             y = 0.95
@@ -2195,7 +2197,7 @@ def pf_build_pdf(progress=None) -> str | None:
                 wrapped = textwrap.fill(desc, width=100)
                 ax.text(0, y, wrapped, fontsize=8, va="top")
                 y -= 0.04 * (wrapped.count("\n") + 2)
-            for sfx, label in [("n", "Normal"), ("e", "Emergency"), ("p", "Pension")]:
+            for sfx, label in [("n", _t("Normal")), ("e", _t("Emergency")), ("p", _t("Pension"))]:
                 on = str(v.get(f"obj_{sfx}") or "").strip()
                 sn = str(v.get(f"sim_{sfx}") or "").strip()
                 if on and sn:
@@ -2210,16 +2212,16 @@ def pf_build_pdf(progress=None) -> str | None:
             # Credit years from global + allocation
             cred = [
                 ["", "12-20 y", "20-35 y", ">35 y", "ground"],
-                ["Credit years", str(data.get("y_12_20") or ""), str(data.get("y_20_35") or ""), str(data.get("y_35") or ""), str(data.get("y_ground") or "")],
-                ["Amount", str(v.get("inv_12_20") or ""), str(v.get("inv_20_35") or ""), str(v.get("inv_35") or ""), str(v.get("inv_ground") or "")],
-                ["From bank", str(v.get("bank_12_20") or ""), str(v.get("bank_20_35") or ""), str(v.get("bank_35") or ""), str(v.get("bank_ground") or "")],
+                [_t("Credit years"), str(data.get("y_12_20") or ""), str(data.get("y_20_35") or ""), str(data.get("y_35") or ""), str(data.get("y_ground") or "")],
+                [_t("Amount"), str(v.get("inv_12_20") or ""), str(v.get("inv_20_35") or ""), str(v.get("inv_35") or ""), str(v.get("inv_ground") or "")],
+                [_t("From bank"), str(v.get("bank_12_20") or ""), str(v.get("bank_20_35") or ""), str(v.get("bank_35") or ""), str(v.get("bank_ground") or "")],
             ]
             t = ax.table(cellText=cred, loc="upper left", cellLoc="center",
                          colWidths=[0.18, 0.16, 0.16, 0.16, 0.16], bbox=[0, max(0.05, y-0.22), 0.82, 0.18])
             style_table(t)
             pdf.savefig(fig); plt.close(fig)
 
-            for stress, slabel in [("normal", "Normal"), ("s1", "Stress 1"), ("s2", "Stress 2"), ("s3", "Stress 3"), ("s4", "Stress 4")]:
+            for stress, slabel in [("normal", _t("Normal")), ("s1", _t("Stress 1")), ("s2", _t("Stress 2")), ("s3", _t("Stress 3")), ("s4", _t("Stress 4"))]:
                 result = pf_simulate(code, stress)
                 months = result.get("months") or []
                 if not months:
@@ -2286,14 +2288,14 @@ def pf_build_pdf(progress=None) -> str | None:
                         return None
                     header = ["", f"nominal {yg[0]}", f"nominal {yg[1]}", f"nominal {yg[2]}", f"real {yg[0]}", f"real {yg[1]}", f"real {yg[2]}"]
                     jan_labels = [
-                        ("Income (other)", "income", "income_real"),
-                        ("Energy sold", "energy_sold", "energy_sold_real"),
-                        ("Interest (bank)", "interest", "interest_real"),
-                        ("Month balance", "month_balance", "month_balance_real"),
-                        ("Expenses (other)", "expenses", "expenses_real"),
-                        ("Energy purchased", "energy_purchased", "energy_purchased_real"),
-                        ("Depreciation/maintenance", "depreciation", "depreciation_real"),
-                        ("Downpayment credit", "credit_payment", "credit_payment_real"),
+                        (_t("Income (other)"), "income", "income_real"),
+                        (_t("Energy sold"), "energy_sold", "energy_sold_real"),
+                        (_t("Interest (bank)"), "interest", "interest_real"),
+                        (_t("Month balance"), "month_balance", "month_balance_real"),
+                        (_t("Expenses (other)"), "expenses", "expenses_real"),
+                        (_t("Energy purchased"), "energy_purchased", "energy_purchased_real"),
+                        (_t("Depreciation/maintenance"), "depreciation", "depreciation_real"),
+                        (_t("Downpayment credit"), "credit_payment", "credit_payment_real"),
                     ]
                     def make_rows(month_idx, labels):
                         rows = [["", f"nominal {yg[0]}", f"nominal {yg[1]}", f"nominal {yg[2]}", f"real {yg[0]}", f"real {yg[1]}", f"real {yg[2]}"]]
@@ -2309,16 +2311,16 @@ def pf_build_pdf(progress=None) -> str | None:
                         return rows
                     ax = fig.add_axes([0.02, 0.02, 0.96, 0.92])
                     ax.axis("off")
-                    ax.text(0.0, 0.98, "January", fontsize=10, fontweight="bold", va="top")
+                    ax.text(0.0, 0.98, _t("January"), fontsize=10, fontweight="bold", va="top")
                     t1 = ax.table(cellText=make_rows(0, jan_labels), loc="upper left", cellLoc="right",
                                   colWidths=[0.20, 0.13, 0.13, 0.13, 0.13, 0.13, 0.13], bbox=[0, 0.66, 0.96, 0.30])
                     style_table(t1)
-                    ax.text(0.0, 0.64, "July", fontsize=10, fontweight="bold", va="top")
+                    ax.text(0.0, 0.64, _t("July"), fontsize=10, fontweight="bold", va="top")
                     t2 = ax.table(cellText=make_rows(6, jan_labels), loc="upper left", cellLoc="right",
                                   colWidths=[0.20, 0.13, 0.13, 0.13, 0.13, 0.13, 0.13], bbox=[0, 0.32, 0.96, 0.30])
                     style_table(t2)
-                    ax.text(0.0, 0.30, "December bank & credit", fontsize=10, fontweight="bold", va="top")
-                    dec_labels = [("Bank account", "bank", "bank_real"), ("Rest value all credits", "credit", "credit_real")]
+                    ax.text(0.0, 0.30, _t("December bank & credit"), fontsize=10, fontweight="bold", va="top")
+                    dec_labels = [(_t("Bank account"), "bank", "bank_real"), (_t("Rest value all credits"), "credit", "credit_real")]
                     t3 = ax.table(cellText=make_rows(11, dec_labels), loc="upper left", cellLoc="right",
                                   colWidths=[0.20, 0.13, 0.13, 0.13, 0.13, 0.13, 0.13], bbox=[0, 0.05, 0.96, 0.22])
                     style_table(t3)

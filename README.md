@@ -28,16 +28,23 @@ simulation. For example:
 - 5000 GEMINI next Generation houses
 - A fast charging station
 - A power to methanol plant with a tank and a CCPP — Combined Cycle Power Plant
-- Agricultural areas with irrigation and peak demand for electric tractors
+- Agricultural areas with peak demand for electric tractors
 - An only electric-powered cement factory
 
 We will implement in these simulations different industries.
 
-## 2026-10-30 Version 0.2
+## 2026-11-06 Version 0.3
 
-Internationalization at the PDF output. GUI and manual remain English only.
-Project finance: Explore “Let it be like it is” vs. 5 improvement strategies.
-Make stress tests with the financial situation.
+Multi-language PDF support for all PDF pages (object house, compare houses, project finance).
+23 languages available on the PDF output page.
+
+## 2026-11-05 Version 0.2
+
+Project finance PDF creation with charts, tables and 7z export.
+Full language support for all PDF pages (23 languages).
+Linux install fixed: pin numpy to <2 to avoid matplotlib conflict.
+Flag order on PDF output page changed (English, German, French, Spanish, Italian first, then A–Z).
+Logo references updated to 2026-11-05-logo.png.
 
 ## 2026-10-14 Version 0.1
 
@@ -53,10 +60,10 @@ to import and export electricity.
 ## Files
 
 - `pege_energy_sim_server_uses_default_browser_as_gui.py` — form, default browser as GUI
-- `pege_energy_sim_common.py` — PVGIS, thermal model, PDF generation, shared helpers
-- `pege_energy_sim_object_house.py` — object house form and simulation runner
-- `pege_energy_sim_compare_houses.py` — compare two simulations
-- `pege_energy_sim_project_finance.py` — project finance (baseline, variants A–E, simulate)
+- `pege_energy_sim_report.py` — PVGIS download and PDF
+- `pege_energy_sim_demand.py` — house, heat pump, prices
+- `pege_energy_sim_demand_sim.py` — hourly battery and grid run
+- `pege_energy_sim_gui.py` — desktop window, no browser
 
 ## Start
 
@@ -73,7 +80,6 @@ Under the output parent folder:
 - `locations/` — weather CSV cache, one folder per place, and `.pvgis_country_cache.json`
 - `objects/<object>/` — object JSON and the PDF/JSON of each run
 - `compares/` — compare PDFs
-- `project-finance/<project>/` — project finance models and their simulations
 
 Move existing location folders into `locations/`. A folder still sitting
 in the parent is used, not copied.
@@ -105,22 +111,28 @@ Support: https://www.paypal.biz/pegefounder
 
 ## Linux
 
+Most Linux installations do not need special treatment.
+
 Install the archive tool and Python once:
 
 ```
 sudo apt install p7zip-full python3 python3-pip
 7z x pege-energy-sim.7z
 cd PEGE-energy-sim
-pip3 install numpy pandas matplotlib requests
-```
-
-Make the server file executable: right-click it, Properties, Permissions, Allow executing file as program. Then right-click again and choose Run as a program.
-
-Or from a terminal in the extracted folder:
-
-```
+pip3 install "numpy<2" pandas matplotlib requests
 python3 pege_energy_sim_server_uses_default_browser_as_gui.py
 ```
+
+In case of version conflicts with other software that needs a different NumPy, use a virtual environment:
+
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install "numpy<2" pandas matplotlib requests
+python pege_energy_sim_server_uses_default_browser_as_gui.py
+```
+
+Make the server file executable if you prefer a double-click start: right-click it, Properties, Permissions, Allow executing file as program.
 
 ## Apple
 
@@ -135,7 +147,7 @@ Install Python 3.11 or newer from https://www.python.org/ if `python3` is missin
 
 ```
 cd PEGE-energy-sim
-pip3 install numpy pandas matplotlib requests
+pip3 install "numpy<2" pandas matplotlib requests
 python3 pege_energy_sim_server_uses_default_browser_as_gui.py
 ```
 
@@ -146,7 +158,7 @@ python3 pege_energy_sim_server_uses_default_browser_as_gui.py
 Install Python 3.11 or newer from https://www.python.org/ and enable "Add python.exe to PATH". Then in a command window in the extracted folder:
 
 ```
-py -m pip install numpy pandas matplotlib requests
+py -m pip install "numpy<2" pandas matplotlib requests
 py pege_energy_sim_server_uses_default_browser_as_gui.py
 ```
 
@@ -161,7 +173,7 @@ Install Termux from F-Droid. In Termux:
 ```
 pkg update
 pkg install python
-pip install numpy pandas matplotlib requests
+pip install "numpy<2" pandas matplotlib requests
 ```
 
 Copy the extracted folder onto the tablet, `cd` into it, then:

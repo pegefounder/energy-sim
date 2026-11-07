@@ -398,7 +398,7 @@ FILES_HTML = """
           const outer = document.createElement("div");
           outer.style.cssText = "width:36px;height:24px;overflow:hidden;position:relative";
           const img = document.createElement("img");
-          img.src = "https://www.pege.org/pic/2024-01-18-logo.png";
+          img.src = "https://www.pege.org/pic/2026-11-05-logo.png";
           img.style.cssText = "position:absolute;left:" + (-xy[0]) + "px;top:" + (-xy[1]) + "px;border:0;cursor:pointer";
           img.title = lang;
           img.onclick = function () { location.href = "/pdf-output?lang=" + encodeURIComponent(lang); };
@@ -1236,11 +1236,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/pdf-output":
             flags = [
-                ("english", 362, 2), ("german", 322, 2), ("spanish", 2, 32),
-                ("portugese", 322, 32), ("french", 42, 32), ("italian", 122, 32),
-                ("polish", 282, 32), ("czech", 482, 2), ("slovak", 442, 32),
-                ("hungarian", 82, 32), ("romanian", 362, 32), ("slovenian", 482, 32),
-                ("croatian", 562, 64),
+                # Option B: English, German, French, Spanish, Italian, then A-Z
+                ("english", 362, 2), ("german", 322, 2), ("french", 42, 32),
+                ("spanish", 2, 32), ("italian", 122, 32),
+                ("bulgarian", 402, 2), ("chinese", 442, 2), ("croatian", 562, 64),
+                ("czech", 482, 2), ("danish", 522, 2), ("greek", 562, 2),
+                ("hungarian", 82, 32), ("japanese", 162, 32), ("korean", 202, 32),
+                ("norwegian", 242, 32), ("polish", 282, 32), ("portugese", 322, 32),
+                ("romanian", 362, 32), ("russian", 402, 32), ("slovak", 442, 32),
+                ("slovenian", 482, 32), ("swedish", 522, 32), ("turkish", 562, 32),
             ]
             settings_path = HERE / "settings.json"
             current = "english"
@@ -1261,14 +1265,16 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
             items = []
-            for name, x, y in flags:
+            for i, (name, x, y) in enumerate(flags):
                 border = "3px solid #1a5fb4" if name == current else "3px solid transparent"
                 items.append(
-                    f'<a href="/pdf-output?lang={name}" style="display:inline-block;margin:6px 10px;text-align:center;text-decoration:none;color:inherit">'
-                    f'<div style="width:36px;height:24px;background:url(https://www.pege.org/pic/2024-01-18-logo.png) no-repeat {-x}px {-y}px;border:{border};border-radius:2px" '
+                    f'<a href="/pdf-output?lang={name}" style="display:inline-block;margin:6px 8px;text-align:center;text-decoration:none;color:inherit;width:56px">'
+                    f'<div style="width:36px;height:24px;margin:0 auto;background:url(https://www.pege.org/pic/2026-11-05-logo.png) no-repeat {-x}px {-y}px;border:{border};border-radius:2px" '
                     f'onmouseover="this.style.outline=\'2px solid #3584e4\'" onmouseout="this.style.outline=\'\'"></div>'
-                    f'<div style="font-size:12px;margin-top:2px">{name}</div></a>'
+                    f'<div style="font-size:11px;margin-top:2px">{name}</div></a>'
                 )
+                if i == 11:
+                    items.append("<br>")
             body = f"<h2>PDF output</h2><p>Current language: <b>{html.escape(current)}</b></p>" + "".join(items)
             body += '<p style="margin-top:16px"><a href="/form">Back to main</a></p>'
             self._send(200, page_shell("PDF output", body))
@@ -1285,12 +1291,28 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     newer = False
             view = (parse_qs(parsed.query).get("view") or ["local"])[0]
-            if newer:
-                active = "remote" if view == "remote" else "local"
-                body += '<p style="margin:12px 0">'
-                body += f'<a href="/about?view=local" style="padding:6px 12px;margin-right:8px;border-radius:4px;text-decoration:none;background:{"#1a5fb4" if active=="local" else "#e0e0e0"};color:{"#fff" if active=="local" else "#333"}">Current version on Your computer</a>'
-                body += f'<a href="/about?view=remote" style="padding:6px 12px;border-radius:4px;text-decoration:none;background:{"#1a5fb4" if active=="remote" else "#e0e0e0"};color:{"#fff" if active=="remote" else "#333"}">New version available</a>'
-                body += '</p>'
+            active = "remote" if view == "remote" else "local"
+            body += '<p style="margin:12px 0">'
+            body += f'<a href="/about?view=local" style="padding:6px 12px;margin-right:8px;border-radius:4px;text-decoration:none;background:{"#1a5fb4" if active=="local" else "#e0e0e0"};color:{"#fff" if active=="local" else "#333"}">this computer</a>'
+            body += f'<a href="/about?view=remote" style="padding:6px 12px;border-radius:4px;text-decoration:none;background:{"#1a5fb4" if active=="remote" else "#e0e0e0"};color:{"#fff" if active=="remote" else "#333"}">Github</a>'
+            body += '</p>'
+            if view == "remote":
+                local_readme = ""
+                remote_readme = ""
+                try:
+                    import urllib.request
+                    req = urllib.request.Request("https://raw.githubusercontent.com/pegefounder/energy-sim/main/README.md", headers={"User-Agent": "PEGE-energy-sim"})
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        remote_readme = resp.read().decode("utf-8", errors="replace")
+                except Exception:
+                    remote_readme = ""
+                local_path = HERE / "README.md"
+                if local_path.is_file():
+                    local_readme = local_path.read_text(encoding="utf-8")
+                same = (local_readme.strip() == remote_readme.strip()) if (local_readme and remote_readme) else False
+                status = "same" if same else "different"
+                color = "#2e7d32" if same else "#c62828"
+                body += f'<p style="margin:4px 0 12px;color:{color};font-weight:bold">{status}</p>'
             body += "<h2>README</h2>"
             readme_text = ""
             if view == "remote" or not (HERE / "README.md").is_file():
@@ -1331,7 +1353,7 @@ class Handler(BaseHTTPRequestHandler):
 <form action="https://www.paypal.com/cgi-bin/webscr" method="post" target="_blank" style="display:inline">
 <input type="hidden" name="cmd" value="_s-xclick">
 <input type="hidden" name="hosted_button_id" value="XNMPYU3R396Z8">
-<button type="submit" name="submit" style="width:120px;height:47px;background:url(https://www.pege.org/pic/2024-01-18-logo.png) no-repeat -210px -60px;border:none;cursor:pointer;text-indent:-9999px;">Donate</button>
+<button type="submit" name="submit" style="width:120px;height:47px;background:url(https://www.pege.org/pic/2026-11-05-logo.png) no-repeat -210px -60px;border:none;cursor:pointer;text-indent:-9999px;">Donate</button>
 </form>
 </div>
 <p><a href="/">Back to main</a></p>

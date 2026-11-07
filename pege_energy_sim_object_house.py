@@ -118,7 +118,7 @@ def form_html(values: dict | None = None) -> bytes:
       </div>
     </div>
   </div>
-<div id="locmap" style="height:280px;margin:0 0 14px;border:1px solid #d5dbe6"></div>
+<div id="locmap" style="height:280px;margin:0 0 8px;border:1px solid #d5dbe6"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <p class="hint">Click the map or type coordinates. The marker is the selected location.
@@ -128,6 +128,7 @@ def form_html(values: dict | None = None) -> bytes:
     <span>Search place</span>
     <input id="placeSearch" placeholder="Corfu, Aalborg, Cairo…" style="flex:1;max-width:400px">
     <button type="button" id="placeGo">Find</button>
+    <button type="button" id="mapToggle">Map / Satellite</button>
     <span id="placeHit" class="hint"></span>
   </div>
   <div class="field" style="max-width:720px">
@@ -383,7 +384,12 @@ function initMap() {{
   var lon = parseFloat(lonEl.value) || 15.989;
   var map = L.map(box).setView([lat, lon], 8);
   window._pegeMap = map;
-  L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{maxZoom: 18}}).addTo(map);
+  var street = L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{maxZoom: 18, attribution: "© OpenStreetMap"}});
+  var sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}", {{maxZoom: 18, attribution: "© Esri"}});
+  street.addTo(map);
+  window._pegeStreet = street;
+  window._pegeSat = sat;
+  window._pegeSatOn = false;
   var marker = L.marker([lat, lon], {{draggable: true}}).addTo(map);
   window._pegeMarker = marker;
   map.on("click", function(e) {{
@@ -400,6 +406,18 @@ function initMap() {{
   }});
 }}
 initMap();
+document.getElementById("mapToggle").addEventListener("click", function () {{
+  if (!window._pegeMap) return;
+  if (window._pegeSatOn) {{
+    window._pegeMap.removeLayer(window._pegeSat);
+    window._pegeStreet.addTo(window._pegeMap);
+    window._pegeSatOn = false;
+  }} else {{
+    window._pegeMap.removeLayer(window._pegeStreet);
+    window._pegeSat.addTo(window._pegeMap);
+    window._pegeSatOn = true;
+  }}
+}});
 document.getElementById("placeGo").addEventListener("click", function () {{
   var q = (document.getElementById("placeSearch").value || "").trim();
   var hit = document.getElementById("placeHit");
