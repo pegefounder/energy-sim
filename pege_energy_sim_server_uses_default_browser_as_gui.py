@@ -56,6 +56,9 @@ JOB_LOCK = threading.Lock()
 from pege_energy_sim_common import sanitize_name, list_objects, location_remark, object_folder, object_definition_path, build_report
 
 from pege_energy_sim_project_finance import page_shell
+from pege_energy_sim_object_classes import object_classes_html, object_class_page, OBJECT_CLASSES
+from pege_energy_sim_community import community_html
+from pege_energy_sim_compare_communities import compare_communities_html
 from pege_energy_sim_object_house import (
     form_html, parse_job, job_to_form_values, form_query, form_values_from_qs,
     allowed_roots, is_allowed_path, parse_location_folder_name, list_location_folders,
@@ -492,95 +495,11 @@ FILES_HTML = """
 """
 
 
-OBJECTS_HTML = """
-<h2>Other objects</h2>
-<p class="hint">Yield and demand model shared with house. Select or define an other object (garage, settlement part, etc.).</p>
-<div class="row">
-  <div class="field name"><label>Object</label><select id="objPick"><option value="">— select —</option></select></div>
-  <div class="field wide"><label>Simulation</label><select id="simPick"><option value="">— select —</option></select></div>
-</div>
-<p class="hint">Full form for other object types will reuse the house yield/demand engine.</p>
-<div class="actions">
-  <button type="button" onclick="location.href='/form'">Open as house form</button>
-</div>
-<p><a href="/form">Back to main</a></p>
-<script>
-fetch("/api/workspace").then(r => r.json()).then(d => {
-  const sel = document.getElementById("objPick");
-  (d.objects || []).forEach(n => {
-    const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
-  });
-});
-document.getElementById("objPick").addEventListener("change", function() {
-  const sSel = document.getElementById("simPick");
-  sSel.innerHTML = "<option value=''>— select —</option>";
-  if (!this.value) return;
-  fetch("/api/object-files?object=" + encodeURIComponent(this.value)).then(r => r.json()).then(data => {
-    (data.files || []).forEach(f => {
-      const o = document.createElement("option"); o.value = f.path; o.textContent = f.name; sSel.appendChild(o);
-    });
-  });
-});
-</script>
-"""
 
-COMMUNITY_HTML = """
-<h2>Community</h2>
-<p class="hint">Community runs (DC bus between houses, shared storage, power-to-X) — version 1.0 feature. Yield and demand shared with house.</p>
-<div class="row">
-  <div class="field name"><label>Community object</label><select id="commObj"><option value="">— select —</option></select></div>
-</div>
-<p class="hint">Select houses that belong to the community. Full simulation engine will be added.</p>
-<div class="actions">
-  <button type="button" disabled>Run community simulation (soon)</button>
-</div>
-<p><a href="/form">Back to main</a></p>
-<script>
-fetch("/api/workspace").then(r => r.json()).then(d => {
-  const sel = document.getElementById("commObj");
-  (d.objects || []).forEach(n => {
-    const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
-  });
-});
-</script>
-"""
 
-COMPARE_COMMUNITIES_HTML = """
-<h2>Compare communities</h2>
-<p class="hint">Difference is B − A. Same colour rules as house compare.</p>
-<div class="row">
-  <div class="field name"><label>Community A</label><select id="cA"><option value="">— select —</option></select></div>
-  <div class="field wide"><label>Simulation A</label><select id="sA"><option value="">— file —</option></select></div>
-</div>
-<div class="row">
-  <div class="field name"><label>Community B</label><select id="cB"><option value="">— select —</option></select></div>
-  <div class="field wide"><label>Simulation B</label><select id="sB"><option value="">— file —</option></select></div>
-</div>
-<p class="hint" id="cStatus"></p>
-<div class="actions"><button type="button" id="cBtn" disabled>Compare — write PDF (soon)</button></div>
-<p><a href="/form">Back to main</a></p>
-<script>
-function fill(sel, obj) {
-  sel.innerHTML = "<option value=''>— file —</option>";
-  if (!obj) return;
-  fetch("/api/object-files?object=" + encodeURIComponent(obj)).then(r => r.json()).then(data => {
-    (data.files || []).forEach(f => {
-      const o = document.createElement("option"); o.value = f.path; o.textContent = f.name; sel.appendChild(o);
-    });
-  });
-}
-fetch("/api/workspace").then(r => r.json()).then(d => {
-  ["cA","cB"].forEach(id => {
-    const sel = document.getElementById(id);
-    (d.objects || []).forEach(n => {
-      const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
-    });
-  });
-});
-document.getElementById("cA").addEventListener("change", function() { fill(document.getElementById("sA"), this.value); });
-document.getElementById("cB").addEventListener("change", function() { fill(document.getElementById("sB"), this.value); });
-</script>
-"""
+
+
+
 
 COMPARE_HTML = """
 <h2>Compare houses</h2>
@@ -764,14 +683,22 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        if parsed.path == "/objects":
-            self._send(200, page_shell("Other objects", OBJECTS_HTML))
+        if parsed.path == "/object-classes":
+            self._send(200, page_shell("Object classes", object_classes_html()))
+            return
+        if parsed.path.startswith("/object-classes/"):
+            slug = parsed.path.split("/", 2)[-1]
+            cls = next((c for c in OBJECT_CLASSES if c.replace("×", "x").replace(" ", "-") == slug), None)
+            if cls:
+                self._send(200, page_shell("Object classes", object_class_page(cls)))
+                return
+            self._send(404, page_shell("Object classes", "<p>Unknown class.</p>"))
             return
         if parsed.path == "/community":
-            self._send(200, page_shell("Community", COMMUNITY_HTML))
+            self._send(200, page_shell("Community", community_html()))
             return
         if parsed.path == "/compare-communities":
-            self._send(200, page_shell("Compare communities", COMPARE_COMMUNITIES_HTML))
+            self._send(200, page_shell("Compare communities", compare_communities_html()))
             return
         if parsed.path == "/files":
             self._send(200, page_shell("Files", FILES_HTML))

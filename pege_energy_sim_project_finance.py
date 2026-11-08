@@ -1571,14 +1571,14 @@ function drawChart1(months) {
     if (i >= 0 && i < months.length) {
       const m = months[i];
       const rows = [
-        [_t("Income (other)"), m.income, m.income_real],
-        [_t("Energy sold"), m.energy_sold, m.energy_sold_real],
-        [_t("Interest (bank)"), m.interest, m.interest_real],
-        [_t("Month balance"), m.month_balance, m.month_balance_real],
-        [_t("Expenses (other)"), m.expenses, m.expenses_real],
-        [_t("Energy purchased"), m.energy_purchased, m.energy_purchased_real],
-        [_t("Depreciation/maintenance"), m.depreciation, m.depreciation_real],
-        [_t("Downpayment credit"), m.credit_payment, m.credit_payment_real],
+        ["Income (other)", m.income, m.income_real],
+        ["Energy sold", m.energy_sold, m.energy_sold_real],
+        ["Interest (bank)", m.interest, m.interest_real],
+        ["Month balance", m.month_balance, m.month_balance_real],
+        ["Expenses (other)", m.expenses, m.expenses_real],
+        ["Energy purchased", m.energy_purchased, m.energy_purchased_real],
+        ["Depreciation/maintenance", m.depreciation, m.depreciation_real],
+        ["Downpayment credit", m.credit_payment, m.credit_payment_real],
       ];
       showTip(e, tipTable("Year " + m.year + " month " + (m.month + 1) + " (" + m.phase + ")", rows));
     }
@@ -1631,8 +1631,8 @@ function drawChart2(months) {
     if (i >= 0 && i < months.length) {
       const m = months[i];
       const rows = [
-        [_t("Bank account"), m.bank, m.bank_real],
-        [_t("Rest value all credits"), m.credit, m.credit_real],
+        ["Bank account", m.bank, m.bank_real],
+        ["Rest value all credits", m.credit, m.credit_real],
       ];
       (m.credits || []).forEach(c => {
         if (c.rest > 0) rows.push([c.label, c.rest, c.rest]);
@@ -2043,7 +2043,7 @@ def page_shell(title: str, body: str) -> bytes:
     <a href="/form">Object house</a>
     <a href="/compare-houses">Compare houses</a>
     <a href="/project-finance?view=general">Project finance</a>
-    <a href="/objects">Other objects</a>
+    <a href="/object-classes">Object classes</a>
     <a href="/community">Community</a>
     <a href="/compare-communities">Compare communities</a>
     <a href="/pdf-output">PDF output</a>
